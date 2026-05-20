@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: life-engine-runtime
+
+server:
+  port: ${SERVER_PORT:8090}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when_authorized
+
+lifeengine:
+  runtime:
+    fake-workflow:
+      step-delay-ms: 50
+
+runtime:
+  llm:
+    base-url: http://localhost:8000
+    model: Qwen/Qwen2.5-Coder-3B-Instruct
+    api-key: local-dev
+    timeout: 30s
+    max-tokens: 256
+    temperature: 0

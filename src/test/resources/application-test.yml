@@ -1,0 +1,13 @@
+lifeengine:
+  runtime:
+    fake-workflow:
+      step-delay-ms: 10
+
+runtime:
+  llm:
+    base-url: http://localhost:8000
+    model: test-model
+    api-key: test-key
+    timeout: 5s
+    max-tokens: 256
+    temperature: 0

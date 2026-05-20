@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Runtime Cockpit — life-engine-runtime</title>
+    <link rel="stylesheet" href="/cockpit.css" />
+  </head>
+  <body>
+    <header class="header">
+      <h1>Runtime Cockpit</h1>
+      <p class="muted">life-engine-runtime · in-memory · SSE live events</p>
+      <span id="live-badge" class="badge badge--off" aria-live="polite">OFFLINE</span>
+    </header>
+
+    <section class="toolbar" aria-label="Actions">
+      <button type="button" id="btn-start" class="btn btn--primary">Start demo run</button>
+      <button type="button" id="btn-cancel" class="btn" disabled>Cancel run</button>
+      <button type="button" id="btn-reconnect" class="btn" disabled>Reconnect SSE</button>
+      <span id="action-status" class="muted" role="status"></span>
+    </section>
+
+    <p id="error-banner" class="error-banner" hidden role="alert"></p>
+
+    <div class="grid">
+      <section class="panel" aria-labelledby="run-panel-title">
+        <h2 id="run-panel-title">Current run</h2>
+        <dl class="kv">
+          <dt>Run ID</dt>
+          <dd id="run-id">—</dd>
+          <dt>Status</dt>
+          <dd id="run-status">—</dd>
+          <dt>Workflow</dt>
+          <dd id="run-workflow">—</dd>
+          <dt>Correlation</dt>
+          <dd id="run-correlation">—</dd>
+          <dt>Updated</dt>
+          <dd id="run-updated">—</dd>
+        </dl>
+      </section>
+
+      <section class="panel panel--wide" aria-labelledby="events-title">
+        <h2 id="events-title">Event timeline <span class="muted">(live)</span></h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Type</th>
+                <th>Source</th>
+                <th>Payload</th>
+              </tr>
+            </thead>
+            <tbody id="events-body">
+              <tr>
+                <td colspan="4" class="muted">No events yet — start a demo run.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <script src="/cockpit.js" type="module"></script>
+  </body>
+</html>
