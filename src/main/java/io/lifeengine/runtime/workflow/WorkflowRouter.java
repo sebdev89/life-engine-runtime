@@ -1,64 +1,69 @@
 package io.lifeengine.runtime.workflow;
 
-import io.lifeengine.runtime.core.FakeWorkflowExecutor;
 import io.lifeengine.runtime.core.UnknownWorkflowException;
-import io.lifeengine.runtime.llm.OpenAiCompatibleLlmClient;
+import io.lifeengine.runtime.llm.LlmClient;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-/** Strict workflow dispatch — no silent fallback between LLM and fake pipelines. */
+/** Routes workflowId to registered definition + executor — no silent fallback. */
 @Component
 public class WorkflowRouter {
 
     private static final Logger log = LoggerFactory.getLogger(WorkflowRouter.class);
 
+    private final WorkflowRegistry workflowRegistry;
+    private final DefinitionDrivenWorkflowExecutor definitionDrivenWorkflowExecutor;
     private final FakeWorkflowExecutor fakeWorkflowExecutor;
-    private final WorkflowExecutor workflowExecutor;
-    private final OpenAiCompatibleLlmClient llmClient;
+    private final LlmClient llmClient;
 
     public WorkflowRouter(
+            WorkflowRegistry workflowRegistry,
+            DefinitionDrivenWorkflowExecutor definitionDrivenWorkflowExecutor,
             FakeWorkflowExecutor fakeWorkflowExecutor,
-            WorkflowExecutor workflowExecutor,
-            OpenAiCompatibleLlmClient llmClient) {
+            LlmClient llmClient) {
+        this.workflowRegistry = workflowRegistry;
+        this.definitionDrivenWorkflowExecutor = definitionDrivenWorkflowExecutor;
         this.fakeWorkflowExecutor = fakeWorkflowExecutor;
-        this.workflowExecutor = workflowExecutor;
         this.llmClient = llmClient;
     }
 
     /**
-     * @return executor label stored on the run ({@code llm} or {@code fake})
+     * @return executor label stored on run metadata ({@code fake}, {@code llm}, or {@code definition})
      */
-    public String start(String workflowId, UUID runId, String input) {
-        log.info("Starting workflow {}", workflowId);
+    public String start(String workflowId, UUID runId, String input, String correlationId) {
+        log.info("Starting workflow {} runId={} correlationId={}", workflowId, runId, correlationId);
 
-        if (WorkflowRunContext.LLM_WORKFLOW_ID.equals(workflowId)) {
-            log.info(
-                    "Routing runId={} to LLM WorkflowExecutor (summarizer-agent → classifier-agent), model={}",
-                    runId,
-                    llmClient.defaultModel());
-            workflowExecutor.schedule(runId, input);
-            return "llm";
-        }
-
-        if (WorkflowRunContext.NO_LLM_WORKFLOW_ID.equals(workflowId)) {
-            log.info("Routing runId={} to FakeWorkflowExecutor (agent-a / agent-b)", runId);
-            fakeWorkflowExecutor.schedule(runId);
+        if (WorkflowIds.DEMO_NO_LLM.equals(workflowId)) {
+            workflowRegistry.require(workflowId);
+            log.info("Routing runId={} to FakeWorkflowExecutor (explicit demo, no LLM)", runId);
+            fakeWorkflowExecutor.schedule(runId, correlationId);
             return "fake";
         }
 
-        log.warn("Rejected unknown workflowId={} for runId={}", workflowId, runId);
-        throw new UnknownWorkflowException(workflowId);
+        WorkflowDefinition definition = workflowRegistry.require(workflowId);
+        log.info(
+                "Routing runId={} to definition-driven executor workflowId={} model={}",
+                runId,
+                workflowId,
+                llmClient.defaultModel());
+        definitionDrivenWorkflowExecutor.schedule(runId, definition, input, correlationId);
+        if (WorkflowIds.DEMO_LLM.equals(workflowId)) {
+            return "llm";
+        }
+        return "definition";
     }
 
     public boolean requestCancel(String workflowId, UUID runId) {
-        if (WorkflowRunContext.NO_LLM_WORKFLOW_ID.equals(workflowId)) {
+        if (WorkflowIds.DEMO_NO_LLM.equals(workflowId)) {
             return fakeWorkflowExecutor.requestCancel(runId);
         }
-        if (WorkflowRunContext.LLM_WORKFLOW_ID.equals(workflowId)) {
-            return workflowExecutor.requestCancel(runId);
+        try {
+            workflowRegistry.require(workflowId);
+        } catch (UnknownWorkflowException ex) {
+            return false;
         }
-        return false;
+        return definitionDrivenWorkflowExecutor.requestCancel(runId);
     }
 }

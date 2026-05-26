@@ -2,6 +2,30 @@ spring:
   application:
     name: life-engine-runtime
 
+  # life-engine-runtime owns DB `life_engine_runtime` (schema `public`). See
+  # ../life-engine/docs/operations/11-database-ownership.md for the canonical matrix.
+  #
+  # R2DBC drives RunStore reads/writes; JDBC + Flyway runs migrations at boot.
+  # Set `lifeengine.runtime.persistence.type=inmem` to disable persistence and
+  # fall back to InMemoryRunStore (no DB required) — used by tests and local
+  # dev without PostgreSQL.
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/life_engine_runtime}
+    username: ${SPRING_DATASOURCE_USERNAME:life}
+    password: ${SPRING_DATASOURCE_PASSWORD:life}
+
+  r2dbc:
+    url: ${SPRING_R2DBC_URL:r2dbc:postgresql://localhost:5433/life_engine_runtime}
+    username: ${SPRING_R2DBC_USERNAME:life}
+    password: ${SPRING_R2DBC_PASSWORD:life}
+
+  flyway:
+    enabled: ${FLYWAY_ENABLED:true}
+    url: ${SPRING_FLYWAY_URL:jdbc:postgresql://localhost:5433/life_engine_runtime}
+    user: ${SPRING_FLYWAY_USER:life}
+    password: ${SPRING_FLYWAY_PASSWORD:life}
+    locations: classpath:db/migration
+
 server:
   port: ${SERVER_PORT:8090}
 
@@ -9,15 +33,45 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus,metrics
+  prometheus:
+    metrics:
+      export:
+        enabled: true
   endpoint:
     health:
       show-details: when_authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: ${OTEL_TRACES_SAMPLER_PROBABILITY:1.0}
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
 
 lifeengine:
   runtime:
     fake-workflow:
       step-delay-ms: 50
+    # Persistence backend: `r2dbc` (default, requires PostgreSQL + Flyway) or
+    # `inmem` (volatile, no DB). Tests force `inmem` via application-test.yml.
+    persistence:
+      type: ${LIFE_ENGINE_RUNTIME_PERSISTENCE_TYPE:r2dbc}
+    security:
+      enabled: ${RUNTIME_SECURITY_ENABLED:true}
+      # Phase-1 bridge: mint RUNTIME_VIEWER/OPERATOR/ADMIN from the JWT `role` claim and
+      # ROLE_ADMIN. Required until life-engine-auth seeds RUNTIME_* in auth_role_permission
+      # (tracked in docs/extraction/local-runbook.md). Set to `false` once the auth
+      # Flyway migration ships proper RUNTIME_* permissions.
+      derive-runtime-authorities-from-role: ${RUNTIME_DERIVE_AUTHORITIES_FROM_ROLE:true}
+  security:
+    jwt:
+      # Local default MUST match life-engine-auth/src/main/resources/application-local.yml so
+      # that auth-issued JWTs validate at the runtime without an explicit JWT_SECRET export.
+      # Override via JWT_SECRET in any non-local environment.
+      secret: ${JWT_SECRET:local-dev-jwt-hs512-secret-minimum-32-chars-long-xx}
 
 runtime:
   llm:
@@ -27,3 +81,7 @@ runtime:
     timeout: 30s
     max-tokens: 256
     temperature: 0
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:},%X{requestId:-},%X{correlationId:-},%X{runId:-},%X{workflowId:-}]"

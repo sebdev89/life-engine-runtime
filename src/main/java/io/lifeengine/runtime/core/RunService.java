@@ -1,12 +1,16 @@
 package io.lifeengine.runtime.core;
 
+import io.lifeengine.runtime.api.RunDetailResponse;
 import io.lifeengine.runtime.api.StartRunRequest;
+import io.lifeengine.runtime.domain.EventType;
 import io.lifeengine.runtime.domain.Run;
 import io.lifeengine.runtime.domain.RunStatus;
 import io.lifeengine.runtime.domain.RuntimeEvent;
 import io.lifeengine.runtime.events.RunEventPublisher;
+import io.lifeengine.runtime.observability.RunLogContext;
+import io.lifeengine.runtime.observability.RuntimeMetrics;
 import io.lifeengine.runtime.workflow.WorkflowRouter;
-import io.lifeengine.runtime.workflow.WorkflowRunContext;
+import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
@@ -21,30 +25,34 @@ public class RunService {
 
     private static final Logger log = LoggerFactory.getLogger(RunService.class);
 
-    private final InMemoryRunStore store;
+    private final RunStore store;
     private final WorkflowRouter workflowRouter;
     private final RunEventPublisher eventPublisher;
+    private final RuntimeMetrics metrics;
 
     public RunService(
-            InMemoryRunStore store,
+            RunStore store,
             WorkflowRouter workflowRouter,
-            RunEventPublisher eventPublisher) {
+            RunEventPublisher eventPublisher,
+            RuntimeMetrics metrics) {
         this.store = store;
         this.workflowRouter = workflowRouter;
         this.eventPublisher = eventPublisher;
+        this.metrics = metrics;
     }
 
     public Mono<Run> startRun(StartRunRequest request) {
+        Timer.Sample sample = metrics.startRunTimer();
         return Mono.fromCallable(
                         () -> {
                             Instant now = Instant.now();
                             UUID runId = UUID.randomUUID();
-                            String workflowId = resolveWorkflowId(request.workflowId());
+                            String workflowId = request.workflowId().trim();
                             String correlationId =
                                     request.correlationId() != null && !request.correlationId().isBlank()
                                             ? request.correlationId().trim()
                                             : "corr-" + runId;
-                            String input = resolveInput(request.input());
+                            String input = request.input().trim();
                             Map<String, Object> metadata = new HashMap<>(request.metadata());
                             metadata.put("input", input);
 
@@ -63,7 +71,8 @@ public class RunService {
                             Run running = run.withStatus(RunStatus.RUNNING, Instant.now()).withStartedAt(now);
                             store.saveRun(running);
 
-                            String executor = workflowRouter.start(workflowId, runId, input);
+                            String executor =
+                                    workflowRouter.start(workflowId, runId, input, correlationId);
                             metadata.put("executor", executor);
                             store.saveRun(
                                     new Run(
@@ -77,20 +86,42 @@ public class RunService {
                                             running.finishedAt(),
                                             metadata));
 
-                            log.info(
-                                    "Run started runId={} workflowId={} executor={}",
-                                    runId,
-                                    workflowId,
-                                    executor);
-                            return store.findRun(runId).orElse(running);
+                            RunLogContext.put(correlationId, runId.toString(), workflowId);
+                            try {
+                                metrics.recordRunStarted(workflowId);
+                                log.info(
+                                        "Run started runId={} workflowId={} correlationId={} executor={}",
+                                        runId,
+                                        workflowId,
+                                        correlationId,
+                                        executor);
+                                return store.findRun(runId).orElse(running);
+                            } finally {
+                                RunLogContext.clearRun();
+                            }
+                        })
+                .doOnSuccess(
+                        run ->
+                                metrics.stopRunTimer(
+                                        sample, run.workflowId(), run.status().name()));
+    }
+
+    public Mono<RunDetailResponse> getRunDetail(UUID runId) {
+        return Mono.fromCallable(
+                        () -> {
+                            Run run =
+                                    store.findRun(runId)
+                                            .orElseThrow(() -> new RunNotFoundException(runId));
+                            return new RunDetailResponse(
+                                    run,
+                                    store.agentStagesFor(runId),
+                                    store.llmCallRecordsFor(runId),
+                                    store.eventsFor(runId));
                         });
     }
 
     public Mono<Run> getRun(UUID runId) {
-        return Mono.fromCallable(
-                        () ->
-                                store.findRun(runId)
-                                        .orElseThrow(() -> new RunNotFoundException(runId)));
+        return getRunDetail(runId).map(RunDetailResponse::run);
     }
 
     public Mono<Run> cancelRun(UUID runId) {
@@ -103,33 +134,55 @@ public class RunService {
                                 throw new IllegalStateException(
                                         "Run already terminal: " + run.status());
                             }
-                            workflowRouter.requestCancel(run.workflowId(), runId);
+                            boolean signalled = workflowRouter.requestCancel(run.workflowId(), runId);
                             Instant now = Instant.now();
                             Run cancelled = run.withStatus(RunStatus.CANCELLED, now);
-                            store.saveRun(cancelled);
+                            Map<String, Object> metadata = new HashMap<>(cancelled.metadata());
+                            metadata.put(
+                                    "cancelNote",
+                                    signalled
+                                            ? "Cancellation signalled; in-flight LLM HTTP calls may still complete."
+                                            : "Run marked cancelled; no active workflow job found.");
+                            Run withNote =
+                                    new Run(
+                                            cancelled.id(),
+                                            cancelled.status(),
+                                            cancelled.workflowId(),
+                                            cancelled.correlationId(),
+                                            cancelled.createdAt(),
+                                            cancelled.updatedAt(),
+                                            cancelled.startedAt(),
+                                            cancelled.finishedAt(),
+                                            metadata);
+                            store.saveRun(withNote);
                             RuntimeEvent event =
                                     RuntimeEvent.of(
                                             runId,
-                                            "RUN_CANCELLED",
-                                            Map.of("reason", "operator_cancel"),
+                                            EventType.RUN_CANCELLED.wireName(),
+                                            Map.of(
+                                                    "reason",
+                                                    "operator_cancel",
+                                                    "workflowId",
+                                                    run.workflowId(),
+                                                    "correlationId",
+                                                    run.correlationId()),
                                             true);
                             store.appendEvent(event);
                             eventPublisher.publish(event);
-                            return cancelled;
+                            RunLogContext.put(
+                                    run.correlationId(), runId.toString(), run.workflowId());
+                            try {
+                                metrics.recordRunTerminal(run.workflowId(), RunStatus.CANCELLED.name());
+                                log.info(
+                                        "Run cancelled runId={} workflowId={} correlationId={}",
+                                        runId,
+                                        run.workflowId(),
+                                        run.correlationId());
+                                return withNote;
+                            } finally {
+                                RunLogContext.clearRun();
+                            }
                         });
     }
 
-    static String resolveWorkflowId(String workflowId) {
-        if (workflowId == null || workflowId.isBlank()) {
-            return WorkflowRunContext.LLM_WORKFLOW_ID;
-        }
-        return workflowId.trim();
-    }
-
-    private static String resolveInput(String input) {
-        if (input == null || input.isBlank()) {
-            return WorkflowRunContext.DEFAULT_INPUT;
-        }
-        return input.trim();
-    }
 }

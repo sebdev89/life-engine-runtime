@@ -26,19 +26,51 @@ public class RequestCorrelationWebFilter implements WebFilter {
         exchange.getResponse().getHeaders().add("X-Request-Id", requestId);
         exchange.getResponse().getHeaders().add("X-Correlation-Id", correlationId);
 
+        String runId = extractRunId(exchange.getRequest().getPath().value());
+        String workflowId = exchange.getRequest().getQueryParams().getFirst("workflowId");
+
         return chain.filter(exchange)
                 .contextWrite(
-                        ctx ->
-                                ctx.put(REQUEST_ID_KEY, requestId)
-                                        .put(CORRELATION_ID_KEY, correlationId))
+                        ctx -> {
+                            Context next =
+                                    ctx.put(REQUEST_ID_KEY, requestId)
+                                            .put(CORRELATION_ID_KEY, correlationId);
+                            if (runId != null) {
+                                next = next.put(RunLogContext.RUN_ID, runId);
+                            }
+                            if (workflowId != null) {
+                                next = next.put(RunLogContext.WORKFLOW_ID, workflowId);
+                            }
+                            return next;
+                        })
                 .doOnEach(
                         signal -> {
                             if (signal.isOnNext() || signal.isOnComplete() || signal.isOnError()) {
                                 MDC.put(REQUEST_ID_KEY, requestId);
                                 MDC.put(CORRELATION_ID_KEY, correlationId);
+                                if (runId != null) {
+                                    MDC.put(RunLogContext.RUN_ID, runId);
+                                }
+                                if (workflowId != null) {
+                                    MDC.put(RunLogContext.WORKFLOW_ID, workflowId);
+                                }
                             }
                         })
                 .doFinally(sig -> MDC.clear());
+    }
+
+    private static String extractRunId(String path) {
+        String prefix = "/api/runtime/runs/";
+        if (!path.startsWith(prefix)) {
+            return null;
+        }
+        String rest = path.substring(prefix.length());
+        int slash = rest.indexOf('/');
+        String candidate = slash < 0 ? rest : rest.substring(0, slash);
+        if (candidate.isBlank() || "stream".equals(candidate) || "events".equals(candidate)) {
+            return null;
+        }
+        return candidate;
     }
 
     private static String headerOrNew(ServerWebExchange exchange, String name) {

@@ -1,12 +1,13 @@
 package io.lifeengine.runtime.agents;
 
+import io.lifeengine.runtime.domain.EventType;
+import io.lifeengine.runtime.llm.LlmClient;
 import io.lifeengine.runtime.llm.LlmMessage;
-import io.lifeengine.runtime.llm.OpenAiCompatibleLlmClient;
 import io.lifeengine.runtime.workflow.WorkflowRunContext;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.regex.Pattern;
+import java.util.Set;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
@@ -15,12 +16,19 @@ public class ClassifierAgent implements AgentExecutor {
 
     public static final String AGENT_ID = "classifier-agent";
 
-    private static final Pattern CLASSIFICATION =
-            Pattern.compile("\\b(INFO|ACTION|RISK|UNKNOWN)\\b", Pattern.CASE_INSENSITIVE);
+    static final String SYSTEM_PROMPT =
+            """
+            You classify operational incident JSON from the summarizer agent.
+            Reply with JSON only: no markdown, no code fences, no extra text.
+            Schema:
+            {"category":"INFO|ACTION|RISK|UNKNOWN","reason":"short explanation"}
+            category must be exactly one of: INFO, ACTION, RISK, UNKNOWN
+            """
+                    .strip();
 
-    private final OpenAiCompatibleLlmClient llmClient;
+    private final LlmClient llmClient;
 
-    public ClassifierAgent(OpenAiCompatibleLlmClient llmClient) {
+    public ClassifierAgent(LlmClient llmClient) {
         this.llmClient = llmClient;
     }
 
@@ -30,53 +38,58 @@ public class ClassifierAgent implements AgentExecutor {
     }
 
     @Override
+    public Set<String> capabilities() {
+        return Set.of("execute", "llm", "structured-output", "classify");
+    }
+
+    @Override
     public Mono<AgentExecutionResult> execute(AgentExecutionRequest request, WorkflowRunContext ctx) {
         if (ctx.isCancelled()) {
             return Mono.error(new IllegalStateException("Run cancelled"));
         }
-        ctx.emit("AGENT_STARTED", Map.of("agentId", AGENT_ID), false);
+        ctx.emit(EventType.AGENT_STARTED, Map.of("agentId", AGENT_ID), false);
 
         List<LlmMessage> messages =
-                List.of(
-                        new LlmMessage(
-                                "system",
-                                "Classify the user summary into exactly one label: INFO, ACTION, RISK, or UNKNOWN."
-                                        + " Reply with the label only."),
-                        new LlmMessage("user", request.input()));
+                List.of(new LlmMessage("system", SYSTEM_PROMPT), new LlmMessage("user", request.input()));
 
-        return LlmAgentSupport.callLlm(ctx, AGENT_ID, llmClient, messages)
-                .map(
+        return LlmAgentSupport.callLlm(ctx, request.stageId(), AGENT_ID, llmClient, messages)
+                .flatMap(
                         response -> {
-                            String classification = parseClassification(response.content());
-                            ctx.emit(
-                                    "AGENT_COMPLETED",
-                                    Map.of(
-                                            "agentId",
-                                            AGENT_ID,
-                                            "classification",
-                                            classification,
-                                            "summary",
-                                            WorkflowRunContext.truncate(request.input(), 200)),
-                                    false);
-                            return AgentExecutionResult.okWithClassification(
-                                    AGENT_ID, response.content(), classification);
+                            try {
+                                StrictAgentJson.ClassifierOutput parsed =
+                                        StrictAgentJson.parseClassifier(response.content());
+                                String canonical = StrictAgentJson.canonicalJson(response.content());
+                                Map<String, String> completed = new LinkedHashMap<>();
+                                completed.put("agentId", AGENT_ID);
+                                completed.put("category", parsed.category());
+                                completed.put("reason", WorkflowRunContext.truncate(parsed.reason(), 300));
+                                completed.put("structured", WorkflowRunContext.truncate(canonical, 500));
+                                completed.put(
+                                        "incidentJson",
+                                        WorkflowRunContext.truncate(request.input(), 500));
+                                ctx.emit(EventType.AGENT_SUCCEEDED, completed, false);
+                                return Mono.just(
+                                        AgentExecutionResult.okWithClassification(
+                                                AGENT_ID, canonical, parsed.category()));
+                            } catch (IllegalArgumentException e) {
+                                return agentParseFailed(ctx, e);
+                            }
                         })
                 .onErrorResume(
                         error -> {
+                            if (error instanceof IllegalArgumentException) {
+                                return Mono.error(error);
+                            }
                             String msg = error.getMessage() == null ? error.toString() : error.getMessage();
-                            ctx.emit("AGENT_FAILED", Map.of("agentId", AGENT_ID, "error", msg), false);
+                            ctx.emit(EventType.AGENT_FAILED, Map.of("agentId", AGENT_ID, "error", msg), false);
                             return Mono.error(error);
                         });
     }
 
-    static String parseClassification(String raw) {
-        if (raw == null || raw.isBlank()) {
-            return "UNKNOWN";
-        }
-        var matcher = CLASSIFICATION.matcher(raw.toUpperCase(Locale.ROOT));
-        if (matcher.find()) {
-            return matcher.group(1).toUpperCase(Locale.ROOT);
-        }
-        return "UNKNOWN";
+    private Mono<AgentExecutionResult> agentParseFailed(
+            WorkflowRunContext ctx, IllegalArgumentException e) {
+        String msg = AGENT_ID + ": " + e.getMessage();
+        ctx.emit(EventType.AGENT_FAILED, Map.of("agentId", AGENT_ID, "error", msg), false);
+        return Mono.error(new IllegalArgumentException(msg, e));
     }
 }

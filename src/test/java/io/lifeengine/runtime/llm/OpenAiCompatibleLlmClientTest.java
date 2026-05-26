@@ -91,6 +91,31 @@ class OpenAiCompatibleLlmClientTest {
     }
 
     @Test
+    void chatCompletion_onHttp503_marksFailureAsTransientForRetry() {
+        mockLlm.enqueue(
+                new MockResponse()
+                        .setResponseCode(503)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("{\"error\":{\"message\":\"backend overloaded\"}}"));
+
+        OpenAiCompatibleLlmClient client = client(256, 0.0);
+
+        StepVerifier.create(
+                        client.chatCompletion(
+                                new LlmRequest(
+                                        "Qwen/Qwen2.5-Coder-3B-Instruct",
+                                        List.of(new LlmMessage("user", "hello")))))
+                .expectErrorSatisfies(
+                        err -> {
+                            org.assertj.core.api.Assertions.assertThat(err).isInstanceOf(LlmCallException.class);
+                            LlmCallException llm = (LlmCallException) err;
+                            org.assertj.core.api.Assertions.assertThat(llm.statusCode()).isEqualTo(503);
+                            org.assertj.core.api.Assertions.assertThat(llm.isTransient()).isTrue();
+                        })
+                .verify();
+    }
+
+    @Test
     void chatCompletion_onHttp400_exposesStatusAndBody() {
         String errorJson = "{\"error\":{\"message\":\"model not found\",\"type\":\"invalid_request\"}}";
         mockLlm.enqueue(
@@ -119,6 +144,7 @@ class OpenAiCompatibleLlmClientTest {
                             org.assertj.core.api.Assertions.assertThat(llm.model())
                                     .isEqualTo("Qwen/Qwen2.5-Coder-3B-Instruct");
                             org.assertj.core.api.Assertions.assertThat(llm.getCause()).isNotNull();
+                            org.assertj.core.api.Assertions.assertThat(llm.isTransient()).isFalse();
                         })
                 .verify();
     }
@@ -158,6 +184,8 @@ class OpenAiCompatibleLlmClientTest {
                         Duration.ofSeconds(5),
                         maxTokens,
                         temperature);
-        return new OpenAiCompatibleLlmClient(webClient, props);
+        return new OpenAiCompatibleLlmClient(
+                webClient, props, new io.lifeengine.runtime.observability.RuntimeMetrics(
+                        new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
     }
 }

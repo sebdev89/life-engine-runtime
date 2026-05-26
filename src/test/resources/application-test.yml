@@ -1,7 +1,36 @@
+spring:
+  # Tests use the in-memory RunStore — exclude every persistence autoconfig
+  # so Spring Boot does not try to connect to PostgreSQL at boot. The R2DBC
+  # integration test (R2dbcRunStoreIT) opts back in via its own
+  # @SpringBootTest configuration and Testcontainers properties.
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.r2dbc.R2dbcAutoConfiguration
+      - org.springframework.boot.autoconfigure.r2dbc.R2dbcRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.r2dbc.R2dbcTransactionManagerAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.r2dbc.R2dbcDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.r2dbc.R2dbcRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration
+
 lifeengine:
   runtime:
     fake-workflow:
       step-delay-ms: 10
+    persistence:
+      type: inmem
+    security:
+      enabled: false
+  security:
+    jwt:
+      secret: test-jwt-secret-at-least-32-bytes-long!!
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
 
 runtime:
   llm:

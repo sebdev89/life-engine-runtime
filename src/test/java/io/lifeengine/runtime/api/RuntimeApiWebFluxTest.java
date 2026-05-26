@@ -41,7 +41,7 @@ class RuntimeApiWebFluxTest {
                 .post()
                 .uri("/api/runtime/runs")
                 .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue("{\"workflowId\":\"demo-cockpit\"}")
+                .bodyValue("{\"workflowId\":\"demo-cockpit\",\"input\":\"test\"}")
                 .exchange()
                 .expectStatus()
                 .isBadRequest()
@@ -56,7 +56,7 @@ class RuntimeApiWebFluxTest {
                 .post()
                 .uri("/api/runtime/runs")
                 .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue("{\"workflowId\":\"demo.no-llm.workflow\",\"correlationId\":\"test-corr\"}")
+                .bodyValue("{\"workflowId\":\"demo.no-llm.workflow\",\"input\":\"test\",\"correlationId\":\"test-corr\"}")
                 .exchange()
                 .expectStatus()
                 .isCreated()
@@ -124,7 +124,7 @@ class RuntimeApiWebFluxTest {
 
         org.assertj.core.api.Assertions.assertThat(events).hasSize(6);
         org.assertj.core.api.Assertions.assertThat(events.get(0).type()).isEqualTo("RUN_STARTED");
-        org.assertj.core.api.Assertions.assertThat(events.get(5).type()).isEqualTo("RUN_COMPLETED");
+        org.assertj.core.api.Assertions.assertThat(events.get(5).type()).isEqualTo("RUN_SUCCEEDED");
     }
 
     @Test
@@ -155,7 +155,7 @@ class RuntimeApiWebFluxTest {
                 .post()
                 .uri("/api/runtime/runs")
                 .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue("{\"workflowId\":\"demo.no-llm.workflow\"}")
+                .bodyValue("{\"workflowId\":\"demo.no-llm.workflow\",\"input\":\"test\"}")
                 .exchange()
                 .expectStatus()
                 .isCreated()
@@ -190,13 +190,45 @@ class RuntimeApiWebFluxTest {
         org.assertj.core.api.Assertions.assertThat(events).hasSize(6);
         org.assertj.core.api.Assertions.assertThat(events.get(0).type()).isEqualTo("RUN_STARTED");
         org.assertj.core.api.Assertions.assertThat(events.get(1).type()).isEqualTo("AGENT_STARTED");
-        org.assertj.core.api.Assertions.assertThat(events.get(1).attributes().get("agentId"))
+        org.assertj.core.api.Assertions.assertThat(events.get(1).agentId())
                 .isEqualTo("agent-a");
-        org.assertj.core.api.Assertions.assertThat(events.get(2).type()).isEqualTo("AGENT_COMPLETED");
+        org.assertj.core.api.Assertions.assertThat(events.get(2).type()).isEqualTo("AGENT_SUCCEEDED");
         org.assertj.core.api.Assertions.assertThat(events.get(3).type()).isEqualTo("AGENT_STARTED");
-        org.assertj.core.api.Assertions.assertThat(events.get(4).type()).isEqualTo("AGENT_COMPLETED");
-        org.assertj.core.api.Assertions.assertThat(events.get(5).type()).isEqualTo("RUN_COMPLETED");
+        org.assertj.core.api.Assertions.assertThat(events.get(4).type()).isEqualTo("AGENT_SUCCEEDED");
+        org.assertj.core.api.Assertions.assertThat(events.get(5).type()).isEqualTo("RUN_SUCCEEDED");
         org.assertj.core.api.Assertions.assertThat(events.get(5).terminal()).isTrue();
+    }
+
+    @Test
+    void cancelRun_emitsRunCancelledEvent() throws InterruptedException {
+        UUID runId = createRunAndReturnId();
+
+        webTestClient
+                .post()
+                .uri("/api/runtime/runs/{runId}/cancel", runId)
+                .exchange()
+                .expectStatus()
+                .isOk();
+
+        awaitTerminal(runId, RunStatus.CANCELLED);
+
+        List<RuntimeEventResponse> events =
+                webTestClient
+                        .get()
+                        .uri("/api/runtime/runs/{runId}/events", runId)
+                        .accept(MediaType.TEXT_EVENT_STREAM)
+                        .exchange()
+                        .expectStatus()
+                        .isOk()
+                        .returnResult(RuntimeEventResponse.class)
+                        .getResponseBody()
+                        .collectList()
+                        .block(Duration.ofSeconds(5));
+
+        org.assertj.core.api.Assertions.assertThat(events).isNotNull();
+        org.assertj.core.api.Assertions.assertThat(
+                        events.stream().anyMatch(e -> "RUN_CANCELLED".equals(e.type())))
+                .isTrue();
     }
 
     @Test
@@ -246,7 +278,7 @@ class RuntimeApiWebFluxTest {
                 .post()
                 .uri("/api/runtime/runs")
                 .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue("{\"workflowId\":\"demo.no-llm.workflow\"}")
+                .bodyValue("{\"workflowId\":\"demo.no-llm.workflow\",\"input\":\"test\"}")
                 .exchange()
                 .expectStatus()
                 .isCreated()

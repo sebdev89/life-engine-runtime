@@ -1,7 +1,7 @@
 package io.lifeengine.runtime.events;
 
 import io.lifeengine.runtime.api.RuntimeEventResponse;
-import io.lifeengine.runtime.core.InMemoryRunStore;
+import io.lifeengine.runtime.core.RunStore;
 import io.lifeengine.runtime.core.RunNotFoundException;
 import io.lifeengine.runtime.domain.RuntimeEvent;
 import java.time.Duration;
@@ -17,10 +17,10 @@ import reactor.core.publisher.Flux;
 @Service
 public class RunEventStreamService {
 
-    private final InMemoryRunStore store;
+    private final RunStore store;
     private final RunEventPublisher publisher;
 
-    public RunEventStreamService(InMemoryRunStore store, RunEventPublisher publisher) {
+    public RunEventStreamService(RunStore store, RunEventPublisher publisher) {
         this.store = store;
         this.publisher = publisher;
     }

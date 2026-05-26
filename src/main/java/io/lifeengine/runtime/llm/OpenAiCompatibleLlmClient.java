@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.lifeengine.runtime.observability.RuntimeMetrics;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,7 +19,7 @@ import reactor.core.publisher.Mono;
 
 /** vLLM / OpenAI-compatible chat completions client (single provider, no fallback). */
 @Component
-public class OpenAiCompatibleLlmClient {
+public class OpenAiCompatibleLlmClient implements LlmClient {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiCompatibleLlmClient.class);
     private static final String CHAT_COMPLETIONS_PATH = "/v1/chat/completions";
@@ -26,10 +27,13 @@ public class OpenAiCompatibleLlmClient {
 
     private final WebClient webClient;
     private final RuntimeLlmProperties properties;
+    private final RuntimeMetrics metrics;
 
-    public OpenAiCompatibleLlmClient(WebClient llmWebClient, RuntimeLlmProperties properties) {
+    public OpenAiCompatibleLlmClient(
+            WebClient llmWebClient, RuntimeLlmProperties properties, RuntimeMetrics metrics) {
         this.webClient = llmWebClient;
         this.properties = properties;
+        this.metrics = metrics;
     }
 
     public Mono<Boolean> health() {
@@ -82,6 +86,8 @@ public class OpenAiCompatibleLlmClient {
                                         model,
                                         toLlmResponse(response).content().length()))
                 .map(this::toLlmResponse)
+                .doOnSuccess(r -> metrics.recordLlmCall(model, "OK"))
+                .doOnError(e -> metrics.recordLlmFailure(model))
                 .onErrorMap(
                         WebClientResponseException.class,
                         ex -> mapHttpError(ex, model, endpoint, requestJson))
@@ -96,6 +102,11 @@ public class OpenAiCompatibleLlmClient {
 
     public String chatCompletionsEndpoint() {
         return properties.baseUrl().replaceAll("/$", "") + CHAT_COMPLETIONS_PATH;
+    }
+
+    @Override
+    public LlmRetryConfig retryConfig() {
+        return properties.retry();
     }
 
     ChatCompletionRequest buildRequestBody(String model, List<LlmMessage> messages) {

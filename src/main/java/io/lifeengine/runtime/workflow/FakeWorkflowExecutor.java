@@ -1,11 +1,14 @@
-package io.lifeengine.runtime.core;
+package io.lifeengine.runtime.workflow;
 
+import io.lifeengine.runtime.core.RunStore;
+import io.lifeengine.runtime.domain.EventType;
 import io.lifeengine.runtime.domain.Run;
 import io.lifeengine.runtime.domain.RunStatus;
 import io.lifeengine.runtime.domain.RuntimeEvent;
 import io.lifeengine.runtime.events.RunEventPublisher;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -20,21 +23,21 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 /**
- * Deterministic fake pipeline: RUN_STARTED → agent-a → agent-b → RUN_COMPLETED.
+ * Explicit demo pipeline without LLM ({@link WorkflowIds#DEMO_NO_LLM}) — never used as fallback.
  */
 @Component
 public class FakeWorkflowExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(FakeWorkflowExecutor.class);
 
-    private final InMemoryRunStore store;
+    private final RunStore store;
     private final RunEventPublisher eventPublisher;
     private final Duration stepDelay;
     private final ConcurrentHashMap<UUID, AtomicBoolean> cancelFlags = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, Disposable> activeJobs = new ConcurrentHashMap<>();
 
     public FakeWorkflowExecutor(
-            InMemoryRunStore store,
+            RunStore store,
             RunEventPublisher eventPublisher,
             @Value("${lifeengine.runtime.fake-workflow.step-delay-ms:50}") long stepDelayMs) {
         this.store = store;
@@ -42,17 +45,37 @@ public class FakeWorkflowExecutor {
         this.stepDelay = Duration.ofMillis(Math.max(1, stepDelayMs));
     }
 
-    public void schedule(UUID runId) {
-        log.info("Starting fake legacy workflow for runId={} (agent-a / agent-b)", runId);
+    public void schedule(UUID runId, String correlationId) {
+        log.info("Starting fake demo workflow for runId={} (agent-a / agent-b)", runId);
         cancelFlags.put(runId, new AtomicBoolean(false));
         Disposable disposable =
                 Flux.concat(
-                                step(runId, "RUN_STARTED", Map.of(), false),
-                                step(runId, "AGENT_STARTED", Map.of("agentId", "agent-a"), false),
-                                step(runId, "AGENT_COMPLETED", Map.of("agentId", "agent-a"), false),
-                                step(runId, "AGENT_STARTED", Map.of("agentId", "agent-b"), false),
-                                step(runId, "AGENT_COMPLETED", Map.of("agentId", "agent-b"), false),
-                                step(runId, "RUN_COMPLETED", Map.of(), true))
+                                step(runId, correlationId, EventType.RUN_STARTED, Map.of(), false),
+                                step(
+                                        runId,
+                                        correlationId,
+                                        EventType.AGENT_STARTED,
+                                        Map.of("agentId", "agent-a"),
+                                        false),
+                                step(
+                                        runId,
+                                        correlationId,
+                                        EventType.AGENT_SUCCEEDED,
+                                        Map.of("agentId", "agent-a"),
+                                        false),
+                                step(
+                                        runId,
+                                        correlationId,
+                                        EventType.AGENT_STARTED,
+                                        Map.of("agentId", "agent-b"),
+                                        false),
+                                step(
+                                        runId,
+                                        correlationId,
+                                        EventType.AGENT_SUCCEEDED,
+                                        Map.of("agentId", "agent-b"),
+                                        false),
+                                step(runId, correlationId, EventType.RUN_SUCCEEDED, Map.of(), true))
                         .then(Mono.fromRunnable(() -> completeRun(runId)))
                         .subscribeOn(Schedulers.boundedElastic())
                         .subscribe(
@@ -70,19 +93,26 @@ public class FakeWorkflowExecutor {
         Disposable job = activeJobs.remove(runId);
         if (job != null && !job.isDisposed()) {
             job.dispose();
-            return true;
         }
         return flag != null;
     }
 
     private Mono<RuntimeEvent> step(
-            UUID runId, String type, Map<String, String> attributes, boolean terminal) {
+            UUID runId,
+            String correlationId,
+            EventType type,
+            Map<String, String> attributes,
+            boolean terminal) {
         return Mono.defer(
                         () -> {
                             if (isCancelled(runId)) {
                                 return Mono.empty();
                             }
-                            RuntimeEvent event = RuntimeEvent.of(runId, type, attributes, terminal);
+                            Map<String, String> attrs = new LinkedHashMap<>();
+                            attrs.put("workflowId", WorkflowIds.DEMO_NO_LLM);
+                            attrs.put("correlationId", correlationId);
+                            attrs.putAll(attributes);
+                            RuntimeEvent event = RuntimeEvent.of(runId, type.wireName(), attrs, terminal);
                             store.appendEvent(event);
                             eventPublisher.publish(event);
                             return Mono.just(event);
@@ -117,7 +147,11 @@ public class FakeWorkflowExecutor {
                             store.saveRun(updated);
                         });
         RuntimeEvent failed =
-                RuntimeEvent.of(runId, "RUN_FAILED", Map.of("error", err.getMessage()), true);
+                RuntimeEvent.of(
+                        runId,
+                        EventType.RUN_FAILED.wireName(),
+                        Map.of("error", err.getMessage() == null ? err.toString() : err.getMessage()),
+                        true);
         store.appendEvent(failed);
         eventPublisher.publish(failed);
         cancelFlags.remove(runId);

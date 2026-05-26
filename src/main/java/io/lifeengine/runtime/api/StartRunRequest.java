@@ -1,13 +1,14 @@
 package io.lifeengine.runtime.api;
 
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import java.util.Map;
 
-/** Body for {@code POST /api/runtime/runs}. */
+/** Body for {@code POST /api/runtime/runs} (RunRequest contract). */
 public record StartRunRequest(
-        @Size(max = 128) String workflowId,
+        @NotBlank @Size(max = 128) String workflowId,
+        @NotBlank @Size(max = 32_000) String input,
         @Size(max = 128) String correlationId,
-        @Size(max = 32_000) String input,
         Map<String, Object> metadata) {
 
     public StartRunRequest {
