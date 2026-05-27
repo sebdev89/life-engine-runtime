@@ -24,6 +24,7 @@ import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import reactor.util.function.Tuple7;
 
 /**
@@ -105,7 +106,13 @@ public class LoadCryptoMarketContextAgent implements AgentExecutor {
     private Mono<String> callTool(WorkflowRunContext ctx, String toolId, String input) {
         ToolExecutor tool = toolRegistry.require(toolId);
         ToolExecutionRequest req = new ToolExecutionRequest(ctx.runId(), toolId, input, Map.of());
-        return tool.execute(req, ctx).map(r -> r.output() == null ? "" : r.output());
+        // Each cryptobot tool drives a WebClient call that signals on Netty event-loop
+        // threads. Hop to boundedElastic so the Mono.zip / flatMap / onErrorResume
+        // operators downstream — which run blocking ctx.emit calls — never execute on
+        // a non-blocking thread.
+        return tool.execute(req, ctx)
+                .publishOn(Schedulers.boundedElastic())
+                .map(r -> r.output() == null ? "" : r.output());
     }
 
     private Mono<AgentExecutionResult> assemble(

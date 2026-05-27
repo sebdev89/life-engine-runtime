@@ -19,6 +19,7 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import reactor.util.retry.Retry;
 
 /** Shared LLM call + mandatory LLM_CALL_* runtime events and {@link LlmCallRecord} persistence. */
@@ -65,7 +66,16 @@ public final class LlmAgentSupport {
                 WorkflowRunContext.previewAttrs(agentId, model, promptRedacted, template),
                 false);
 
-        Mono<LlmResponse> chatCall = llmClient.chatCompletion(new LlmRequest(model, messages));
+        // publishOn(boundedElastic) is the critical hop: WebClient signals on Netty event-loop
+        // threads (reactor-http-epoll-N) which implement Reactor's NonBlocking marker. Without
+        // this hop, every downstream operator (the retry filter/doBeforeRetry below, every
+        // doOnSuccess/onErrorResume here, and every operator in the calling agent's chain) would
+        // run on the event loop and any blocking RunStore access via ctx.emit/appendLlmCallRecord
+        // would trip Reactor's blocking detector inside R2dbcRunStore.block(...).
+        Mono<LlmResponse> chatCall =
+                llmClient
+                        .chatCompletion(new LlmRequest(model, messages))
+                        .publishOn(Schedulers.boundedElastic());
         LlmRetryConfig retry = llmClient.retryConfig();
         if (retry != null && retry.active()) {
             chatCall = chatCall.retryWhen(buildRetrySpec(ctx, agentId, model, retry));

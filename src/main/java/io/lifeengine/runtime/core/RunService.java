@@ -19,6 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 @Service
 public class RunService {
@@ -100,6 +101,7 @@ public class RunService {
                                 RunLogContext.clearRun();
                             }
                         })
+                .subscribeOn(Schedulers.boundedElastic())
                 .doOnSuccess(
                         run ->
                                 metrics.stopRunTimer(
@@ -117,7 +119,8 @@ public class RunService {
                                     store.agentStagesFor(runId),
                                     store.llmCallRecordsFor(runId),
                                     store.eventsFor(runId));
-                        });
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     public Mono<Run> getRun(UUID runId) {
@@ -182,7 +185,8 @@ public class RunService {
                             } finally {
                                 RunLogContext.clearRun();
                             }
-                        });
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
 }

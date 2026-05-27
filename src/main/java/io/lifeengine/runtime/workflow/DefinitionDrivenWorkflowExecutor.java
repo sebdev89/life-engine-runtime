@@ -71,20 +71,33 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
                 new WorkflowRunContext(
                         runId, definition.workflowId(), correlationId, input, store, eventPublisher, cancelled);
 
+        // Caller is RunService.startRun which already hops to boundedElastic, so this blocking
+        // emit is safe. The subsequent reactive chain handles its own scheduling.
         ctx.emit(EventType.RUN_STARTED, Map.of(), false);
 
         RunLogContext.put(correlationId, runId.toString(), definition.workflowId());
+        Mono<Void> traced =
+                observation.observeRun(
+                        definition.workflowId(),
+                        runId.toString(),
+                        correlationId,
+                        executeDefinition(ctx, definition));
         Disposable disposable =
-                observation
-                        .observeRun(
-                                definition.workflowId(),
-                                runId.toString(),
-                                correlationId,
-                                executeDefinition(ctx, definition))
+                traced
+                        // Reactive failure path: failRun() returns a Mono that hops to
+                        // boundedElastic internally, so the terminal RUN_FAILED emit and
+                        // status update never execute on a Netty event-loop thread even
+                        // when the error originates from a WebClient response callback.
+                        .onErrorResume(err -> failRun(ctx, err))
                         .subscribeOn(Schedulers.boundedElastic())
                         .subscribe(
                                 null,
-                                err -> failRun(ctx, err),
+                                err ->
+                                        log.error(
+                                                "Run terminated with unhandled error runId={} error={}",
+                                                runId,
+                                                err.toString(),
+                                                err),
                                 () -> {
                                     activeJobs.remove(runId);
                                     cancelFlags.remove(runId);
@@ -125,8 +138,7 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
                                     if (ctx.isCancelled()) {
                                         return Mono.empty();
                                     }
-                                    ctx.emit(EventType.RUN_SUCCEEDED, Map.of(), true);
-                                    return Mono.empty();
+                                    return ctx.emitMono(EventType.RUN_SUCCEEDED, Map.of(), true);
                                 }))
                 .then(completeRun(ctx));
     }
@@ -140,6 +152,13 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
                     }
                     Map<String, String> stageAttrs = WorkflowRunContext.stageAttrs(stage);
                     Instant stageStarted = Instant.now();
+                    // STAGE_STARTED is emitted synchronously here: this defer body always
+                    // runs at subscribe-time, which propagates from the outer
+                    // subscribeOn(boundedElastic) (initial subscription) or from the upstream
+                    // stage's publishOn(boundedElastic) (between-stage flatMap), so we are
+                    // guaranteed to be on a blocking-safe thread. Keeping it synchronous also
+                    // preserves the canonical event ordering (STAGE_STARTED → AGENT_STARTED →
+                    // LLM_CALL_STARTED → ...) which agents emit eagerly at Mono construction.
                     ctx.emit(EventType.STAGE_STARTED, stageAttrs, false);
 
                     Mono<String> execution =
@@ -158,7 +177,12 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
 
                     Mono<String> bounded = applyStageTimeout(observed, stageTimeout);
 
-                    return bounded
+                    // publishOn boundary: a stage timeout fires on Schedulers.parallel() and
+                    // a WebClient-driven agent emits on a Netty event-loop. publishOn ensures
+                    // the side-effect operators below (doOnSuccess / onErrorResume) — and the
+                    // synchronous ctx.emit / record* calls inside them — execute on a
+                    // boundedElastic worker, never on a NonBlocking thread.
+                    return bounded.publishOn(Schedulers.boundedElastic())
                             .doOnSuccess(
                                     output -> {
                                         ctx.emit(EventType.STAGE_SUCCEEDED, stageAttrs, false);
@@ -218,6 +242,10 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
                         new AgentExecutionRequest(
                                 ctx.runId(), agentId, stage.stageId(), input, ctx.agentOutputs()),
                         ctx)
+                // Agents that drive a WebClient (LLM, cryptobot tools, ...) emit on the
+                // underlying I/O event-loop. Hop to boundedElastic before the blocking
+                // ctx.emit inside flatMap below executes.
+                .publishOn(Schedulers.boundedElastic())
                 .flatMap(
                         result -> {
                             if (!result.success()) {
@@ -250,6 +278,9 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
         return toolRegistry
                 .require(toolId)
                 .execute(new ToolExecutionRequest(ctx.runId(), toolId, input, Map.of()), ctx)
+                // Tools that drive a WebClient (cryptobot, ...) emit on the underlying I/O
+                // event-loop. Hop before the blocking ctx.emit inside flatMap below.
+                .publishOn(Schedulers.boundedElastic())
                 .flatMap(
                         result -> {
                             if (!result.success()) {
@@ -339,49 +370,71 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
     }
 
     private Mono<Void> completeRun(WorkflowRunContext ctx) {
-        return Mono.fromRunnable(
-                () -> {
-                    if (ctx.isCancelled()) {
-                        return;
-                    }
-                    Instant now = Instant.now();
-                    store.findRun(ctx.runId())
-                            .ifPresent(
-                                    run -> {
-                                        Run updated = run.withStatus(RunStatus.SUCCEEDED, now);
-                                        store.saveRun(updated);
-                                    });
-                    metrics.recordRunTerminal(ctx.workflowId(), RunStatus.SUCCEEDED.name());
-                    log.info(
-                            "Workflow completed runId={} workflowId={} correlationId={}",
-                            ctx.runId(),
-                            ctx.workflowId(),
-                            ctx.correlationId());
-                });
+        // subscribeOn(boundedElastic) guarantees the blocking store.findRun/saveRun pair
+        // never runs on a Netty/parallel thread even if the upstream chain happened to
+        // emit completion on a non-blocking thread (defense in depth: every stage above
+        // now publishes on boundedElastic, but this Mono stays correct in isolation too).
+        return Mono.<Void>fromRunnable(
+                        () -> {
+                            if (ctx.isCancelled()) {
+                                return;
+                            }
+                            Instant now = Instant.now();
+                            store.findRun(ctx.runId())
+                                    .ifPresent(
+                                            run -> {
+                                                Run updated = run.withStatus(RunStatus.SUCCEEDED, now);
+                                                store.saveRun(updated);
+                                            });
+                            metrics.recordRunTerminal(ctx.workflowId(), RunStatus.SUCCEEDED.name());
+                            log.info(
+                                    "Workflow completed runId={} workflowId={} correlationId={}",
+                                    ctx.runId(),
+                                    ctx.workflowId(),
+                                    ctx.correlationId());
+                        })
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
     }
 
-    private void failRun(WorkflowRunContext ctx, Throwable err) {
-        if (ctx.isCancelled()) {
-            return;
-        }
-        String message = err.getMessage() == null ? err.toString() : err.getMessage();
-        ctx.emit(EventType.RUN_FAILED, Map.of("error", WorkflowRunContext.truncate(message, 500)), true);
-        Instant now = Instant.now();
-        store.findRun(ctx.runId())
-                .ifPresent(
-                        run -> {
-                            Run updated = run.withStatus(RunStatus.FAILED, now);
-                            store.saveRun(updated);
-                        });
-        cancelFlags.remove(ctx.runId());
-        metrics.recordRunTerminal(ctx.workflowId(), RunStatus.FAILED.name());
-        log.error(
-                "Workflow failed runId={} workflowId={} correlationId={} error={}",
-                ctx.runId(),
-                ctx.workflowId(),
-                ctx.correlationId(),
-                message,
-                err);
+    /**
+     * Reactive failure handler. Returns a {@link Mono} that performs the terminal
+     * {@code RUN_FAILED} emit, status flip to {@link RunStatus#FAILED}, metrics, and logging
+     * on a {@code boundedElastic} worker, regardless of which scheduler the upstream error
+     * arrived on (Netty event-loop after a WebClient response, {@code Schedulers.parallel()}
+     * after a stage timeout, etc.).
+     */
+    private Mono<Void> failRun(WorkflowRunContext ctx, Throwable err) {
+        return Mono.<Void>fromRunnable(
+                        () -> {
+                            if (ctx.isCancelled()) {
+                                return;
+                            }
+                            String message =
+                                    err.getMessage() == null ? err.toString() : err.getMessage();
+                            ctx.emit(
+                                    EventType.RUN_FAILED,
+                                    Map.of("error", WorkflowRunContext.truncate(message, 500)),
+                                    true);
+                            Instant now = Instant.now();
+                            store.findRun(ctx.runId())
+                                    .ifPresent(
+                                            run -> {
+                                                Run updated = run.withStatus(RunStatus.FAILED, now);
+                                                store.saveRun(updated);
+                                            });
+                            cancelFlags.remove(ctx.runId());
+                            metrics.recordRunTerminal(ctx.workflowId(), RunStatus.FAILED.name());
+                            log.error(
+                                    "Workflow failed runId={} workflowId={} correlationId={} error={}",
+                                    ctx.runId(),
+                                    ctx.workflowId(),
+                                    ctx.correlationId(),
+                                    message,
+                                    err);
+                        })
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
     }
 
     private static Map<String, String> merge(Map<String, String> base, Map<String, String> extra) {

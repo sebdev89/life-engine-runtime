@@ -117,7 +117,11 @@ public class FakeWorkflowExecutor {
                             eventPublisher.publish(event);
                             return Mono.just(event);
                         })
-                .delayElement(stepDelay);
+                // delayElement() without an explicit scheduler routes through
+                // Schedulers.parallel(), which is a NonBlocking scheduler. Subsequent
+                // step()'s Mono.defer body would then run on parallel and the blocking
+                // store.appendEvent inside it would trip Reactor's blocking detector.
+                .delayElement(stepDelay, Schedulers.boundedElastic());
     }
 
     private void completeRun(UUID runId) {

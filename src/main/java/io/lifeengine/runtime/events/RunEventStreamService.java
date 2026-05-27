@@ -13,6 +13,7 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
+import reactor.core.scheduler.Schedulers;
 
 @Service
 public class RunEventStreamService {
@@ -26,6 +27,12 @@ public class RunEventStreamService {
     }
 
     public Flux<ServerSentEvent<RuntimeEventResponse>> stream(UUID runId) {
+        // Defer all RunStore access so the existence check and replay read happen on
+        // boundedElastic — never on the Netty event loop that handles the SSE handshake.
+        return Flux.defer(() -> buildStream(runId)).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private Flux<ServerSentEvent<RuntimeEventResponse>> buildStream(UUID runId) {
         if (store.findRun(runId).isEmpty()) {
             return Flux.error(new RunNotFoundException(runId));
         }

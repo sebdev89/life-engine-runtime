@@ -19,9 +19,24 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Context pack for one workflow run: input, correlation, stage/agent/tool outputs, LLM records, warnings.
+ *
+ * <p>The synchronous {@link #emit(EventType, java.util.Map, boolean)}, {@link #recordStage},
+ * {@link #appendLlmCallRecord}, and {@link #addWarning} methods touch the blocking
+ * {@link io.lifeengine.runtime.core.RunStore} SPI and therefore MUST be invoked from a thread
+ * that tolerates blocking (i.e. {@code Schedulers.boundedElastic()} or another worker pool).
+ * Calling them from a Netty event-loop thread (e.g. {@code reactor-http-epoll-N}) or any other
+ * thread implementing {@link reactor.core.scheduler.NonBlocking} will trip Reactor's blocking
+ * detector inside the R2DBC-backed store.
+ *
+ * <p>For code paths that may execute on a non-blocking thread (e.g. reactive callbacks chained
+ * directly off a {@code WebClient} response), prefer the {@code *Mono} variants
+ * ({@link #emitMono}, {@link #recordStageMono}, {@link #appendLlmCallRecordMono},
+ * {@link #addWarningMono}) which schedule the blocking store work on {@code boundedElastic}.
  */
 public final class WorkflowRunContext {
 
@@ -137,6 +152,51 @@ public final class WorkflowRunContext {
         RuntimeEvent event = RuntimeEvent.of(runId, type, enriched, terminal);
         store.appendEvent(event);
         publisher.publish(event);
+    }
+
+    /**
+     * Reactive variant of {@link #emit(EventType, Map, boolean)} that schedules the blocking
+     * store write on {@code Schedulers.boundedElastic()}. Safe to call from a non-blocking
+     * (Netty / parallel) thread.
+     */
+    public Mono<Void> emitMono(EventType type, Map<String, String> attributes, boolean terminal) {
+        return emitMono(type.wireName(), attributes, terminal);
+    }
+
+    public Mono<Void> emitMono(String type, Map<String, String> attributes, boolean terminal) {
+        return Mono.<Void>fromRunnable(() -> emit(type, attributes, terminal))
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
+    }
+
+    /**
+     * Reactive variant of {@link #recordStage(AgentStageRecord)}. Use from reactive callbacks
+     * that may run on a non-blocking thread.
+     */
+    public Mono<Void> recordStageMono(AgentStageRecord stage) {
+        return Mono.<Void>fromRunnable(() -> recordStage(stage))
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
+    }
+
+    /**
+     * Reactive variant of {@link #appendLlmCallRecord(LlmCallRecord)}. Use from reactive
+     * callbacks that may run on a non-blocking thread.
+     */
+    public Mono<Void> appendLlmCallRecordMono(LlmCallRecord record) {
+        return Mono.<Void>fromRunnable(() -> appendLlmCallRecord(record))
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
+    }
+
+    /**
+     * Reactive variant of {@link #addWarning(String)}. Use from retry / WebClient callbacks
+     * that may run on a non-blocking thread.
+     */
+    public Mono<Void> addWarningMono(String warning) {
+        return Mono.<Void>fromRunnable(() -> addWarning(warning))
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
     }
 
     public static Map<String, String> stageAttrs(WorkflowStage stage) {
