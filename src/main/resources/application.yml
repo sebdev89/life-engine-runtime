@@ -58,7 +58,11 @@ lifeengine:
     # Persistence backend: `r2dbc` (default, requires PostgreSQL + Flyway) or
     # `inmem` (volatile, no DB). Tests force `inmem` via application-test.yml.
     persistence:
-      type: ${LIFE_ENGINE_RUNTIME_PERSISTENCE_TYPE:r2dbc}
+      # Env var name matches Spring Boot's relaxed-binding form of
+      # `lifeengine.runtime.persistence.type` so `LIFEENGINE_RUNTIME_PERSISTENCE_TYPE=inmem`
+      # works whether it is set as a placeholder substitution here OR as a direct
+      # property override at process boot.
+      type: ${LIFEENGINE_RUNTIME_PERSISTENCE_TYPE:r2dbc}
     security:
       enabled: ${RUNTIME_SECURITY_ENABLED:true}
       # Phase-1 bridge: mint RUNTIME_VIEWER/OPERATOR/ADMIN from the JWT `role` claim and
@@ -79,7 +83,12 @@ runtime:
     model: Qwen/Qwen2.5-Coder-3B-Instruct
     api-key: local-dev
     timeout: 30s
-    max-tokens: 256
+    # Sized for vLLM running with --max-model-len=2048. The crypto market-review
+    # JSON outputs (bias/setup/invalidations, approved/warnings/riskLevel, response)
+    # all fit well under 100 tokens; 192 leaves margin without ever truncating mid-JSON.
+    # Pair with the lean marketContext projection in LoadCryptoMarketContextAgent so the
+    # analyst stage stays comfortably under the 2048-token ceiling.
+    max-tokens: 192
     temperature: 0
 
 logging:

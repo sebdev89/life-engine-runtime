@@ -102,7 +102,7 @@ class EventLoopBlockingSafetyTest {
                         null,
                         Map.of()));
 
-        executor.schedule(runId, definition, "input-1", "corr-event-loop-safety");
+        executor.schedule(runId, definition, "input-1", "corr-event-loop-safety", null);
 
         awaitTerminal(store, runId, RunStatus.FAILED, Duration.ofSeconds(5));
 

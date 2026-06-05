@@ -15,6 +15,33 @@ import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.scheduler.Schedulers;
 
+/**
+ * Reactive SSE event spine for a single run.
+ *
+ * <p>Combines the persisted event history (replay) with the in-process live publisher
+ * ({@link RunEventPublisher}) into a single ordered {@link ServerSentEvent} stream:
+ *
+ * <ul>
+ *   <li><b>Blocking safety</b> — every {@link RunStore} read (existence check + replay) is
+ *       wrapped in {@link Flux#defer(java.util.function.Supplier)} and pinned to
+ *       {@link Schedulers#boundedElastic()} so the Netty event-loop that completes the SSE
+ *       handshake never executes a blocking call. Locked in by
+ *       {@code SseStreamBlockingSafetyTest} and the workflow-side
+ *       {@code EventLoopBlockingSafetyTest}.
+ *   <li><b>Ordering &amp; deduplication</b> — the live publisher is a replay sink (last 256
+ *       events). We subscribe to it <em>before</em> draining the store so any event published
+ *       during the handshake is captured by the live consumer (no drop window). A per-event
+ *       {@code seen} set keyed by {@code eventId} suppresses the duplicates that the
+ *       replay-then-store join naturally produces. As long as publishers call
+ *       {@code RunStore.appendEvent} <em>before</em> {@code RunEventPublisher.publish} (which
+ *       {@link io.lifeengine.runtime.workflow.WorkflowRunContext#emit} does), the merged
+ *       order matches the store's {@code seq}-ordered history.
+ *   <li><b>Lifecycle</b> — completes deterministically on the first event flagged terminal
+ *       ({@link io.lifeengine.runtime.domain.RuntimeEvent#terminal()}). A 15s keepalive
+ *       comment frame is emitted in parallel so idle SSE clients (browsers, proxies) do not
+ *       reap the connection; the keepalive flux completes alongside the data flux.
+ * </ul>
+ */
 @Service
 public class RunEventStreamService {
 

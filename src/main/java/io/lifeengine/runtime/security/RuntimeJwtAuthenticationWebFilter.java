@@ -53,7 +53,7 @@ public class RuntimeJwtAuthenticationWebFilter implements WebFilter {
         }
         String auth = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
         var outcome = jwtService.parseAuthorizationHeader(auth);
-        if (outcome.principal().isEmpty() && isSseRunEndpoint(exchange)) {
+        if (outcome.principal().isEmpty() && isSseEndpoint(exchange)) {
             // EventSource can't set headers; fall back to ?access_token= for SSE GETs only.
             String token = exchange.getRequest().getQueryParams().getFirst("access_token");
             if (token != null && !token.isBlank()) {
@@ -89,7 +89,7 @@ public class RuntimeJwtAuthenticationWebFilter implements WebFilter {
         if (authHeader != null && authHeader.regionMatches(true, 0, "Bearer ", 0, 7) && authHeader.length() > 7) {
             return authHeader.substring(7).trim();
         }
-        if (isSseRunEndpoint(exchange)) {
+        if (isSseEndpoint(exchange)) {
             String token = exchange.getRequest().getQueryParams().getFirst("access_token");
             if (token != null && !token.isBlank()) {
                 return token.trim();
@@ -114,14 +114,28 @@ public class RuntimeJwtAuthenticationWebFilter implements WebFilter {
         return HttpMethod.OPTIONS.equals(exchange.getRequest().getMethod());
     }
 
-    static boolean isSseRunEndpoint(ServerWebExchange exchange) {
+    /**
+     * True for any GET that delivers an SSE stream where {@code ?access_token=} fallback is
+     * acceptable. Covers:
+     *
+     * <ul>
+     *   <li>{@code /api/runtime/runs/{id}/stream} and the legacy {@code /events} alias —
+     *       per-run timeline streams.
+     *   <li>{@code /api/runtime/events/stream} — the Global Runtime Event Spine. Browser
+     *       EventSource clients (Mission Control, Crypto Watch) can't set Authorization
+     *       headers and must use the query-param fallback.
+     * </ul>
+     */
+    static boolean isSseEndpoint(ServerWebExchange exchange) {
         if (!org.springframework.http.HttpMethod.GET.equals(exchange.getRequest().getMethod())) {
             return false;
         }
         String path = exchange.getRequest().getPath().value();
-        // Matches /api/runtime/runs/{id}/stream and the legacy /events alias.
-        return path.startsWith("/api/runtime/runs/")
-                && (path.endsWith("/stream") || path.endsWith("/events"));
+        if (path.startsWith("/api/runtime/runs/")
+                && (path.endsWith("/stream") || path.endsWith("/events"))) {
+            return true;
+        }
+        return path.equals("/api/runtime/events/stream");
     }
 
     private Mono<Void> writeJson(ServerWebExchange exchange, HttpStatus status, String code, String message) {

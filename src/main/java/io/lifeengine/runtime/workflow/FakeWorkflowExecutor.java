@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Component;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -45,7 +46,12 @@ public class FakeWorkflowExecutor {
         this.stepDelay = Duration.ofMillis(Math.max(1, stepDelayMs));
     }
 
-    public void schedule(UUID runId, String correlationId) {
+    /**
+     * @param caller intentionally unused — the fake demo workflow makes no authenticated
+     *     outbound HTTP calls. The parameter keeps {@link WorkflowRouter}'s call sites
+     *     symmetric with the definition-driven executor's signature.
+     */
+    public void schedule(UUID runId, String correlationId, Authentication caller) {
         log.info("Starting fake demo workflow for runId={} (agent-a / agent-b)", runId);
         cancelFlags.put(runId, new AtomicBoolean(false));
         Disposable disposable =

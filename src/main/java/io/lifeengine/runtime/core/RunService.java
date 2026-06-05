@@ -14,9 +14,13 @@ import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.ReactiveSecurityContextHolder;
+import org.springframework.security.core.context.SecurityContext;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -44,6 +48,24 @@ public class RunService {
 
     public Mono<Run> startRun(StartRunRequest request) {
         Timer.Sample sample = metrics.startRunTimer();
+        // Phase-1 JWT pass-through: capture the inbound caller's Authentication HERE, while
+        // we are still inside the controller's request Reactor Context (populated by
+        // RuntimeJwtAuthenticationWebFilter). Once we descend into Mono.fromCallable below
+        // and from there imperatively into WorkflowRouter / DefinitionDrivenWorkflowExecutor
+        // — which fire-and-forget .subscribe() the workflow Mono — there is no longer any
+        // upstream Context to read from. Pass the Authentication forward so the executor can
+        // re-attach it via contextWrite(ReactiveSecurityContextHolder.withAuthentication(...))
+        // before subscribing the workflow chain. Without this hop, outbound WebClient filters
+        // (e.g. cryptobotWebClient's jwtPropagationFilter) see Context.empty() and forward
+        // requests with no Authorization header, producing 401s.
+        return ReactiveSecurityContextHolder.getContext()
+                .map(SecurityContext::getAuthentication)
+                .map(Optional::ofNullable)
+                .defaultIfEmpty(Optional.empty())
+                .flatMap(maybeAuth -> startRunInternal(request, maybeAuth.orElse(null), sample));
+    }
+
+    private Mono<Run> startRunInternal(StartRunRequest request, Authentication caller, Timer.Sample sample) {
         return Mono.fromCallable(
                         () -> {
                             Instant now = Instant.now();
@@ -73,7 +95,7 @@ public class RunService {
                             store.saveRun(running);
 
                             String executor =
-                                    workflowRouter.start(workflowId, runId, input, correlationId);
+                                    workflowRouter.start(workflowId, runId, input, correlationId, caller);
                             metadata.put("executor", executor);
                             store.saveRun(
                                     new Run(

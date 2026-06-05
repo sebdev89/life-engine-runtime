@@ -83,7 +83,7 @@ class StageTimeoutWebFluxTest {
                         null,
                         Map.of()));
 
-        executor.schedule(runId, definition, "slow-input", "stage-timeout-test");
+        executor.schedule(runId, definition, "slow-input", "stage-timeout-test", null);
 
         awaitTerminal(store, runId, RunStatus.FAILED, Duration.ofSeconds(5));
 

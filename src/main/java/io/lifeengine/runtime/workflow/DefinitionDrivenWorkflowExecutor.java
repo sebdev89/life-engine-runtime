@@ -25,6 +25,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.stereotype.Component;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
@@ -64,7 +66,12 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
     }
 
     @Override
-    public void schedule(UUID runId, WorkflowDefinition definition, String input, String correlationId) {
+    public void schedule(
+            UUID runId,
+            WorkflowDefinition definition,
+            String input,
+            String correlationId,
+            Authentication caller) {
         AtomicBoolean cancelled = new AtomicBoolean(false);
         cancelFlags.put(runId, cancelled);
         WorkflowRunContext ctx =
@@ -82,13 +89,26 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
                         runId.toString(),
                         correlationId,
                         executeDefinition(ctx, definition));
+
+        // Phase-1 JWT pass-through: attach the inbound caller's Authentication (captured in
+        // RunService from ReactiveSecurityContextHolder) to this workflow's Reactor Context.
+        // Without this contextWrite, the .subscribe(...) below would start a fresh subscription
+        // with Context.empty(), and outbound WebClient filters (e.g. cryptobotWebClient's
+        // jwtPropagationFilter) would not find any SecurityContext to read the bearer from
+        // — producing 401s on every cryptobot tool call.
+        Mono<Void> withAuth = traced.onErrorResume(err -> failRun(ctx, err));
+        if (caller != null) {
+            withAuth =
+                    withAuth.contextWrite(
+                            ReactiveSecurityContextHolder.withAuthentication(caller));
+        }
+
         Disposable disposable =
-                traced
+                withAuth
                         // Reactive failure path: failRun() returns a Mono that hops to
                         // boundedElastic internally, so the terminal RUN_FAILED emit and
                         // status update never execute on a Netty event-loop thread even
                         // when the error originates from a WebClient response callback.
-                        .onErrorResume(err -> failRun(ctx, err))
                         .subscribeOn(Schedulers.boundedElastic())
                         .subscribe(
                                 null,

@@ -1,6 +1,7 @@
 package io.lifeengine.runtime.ext.cryptomarketreview.stages;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.lifeengine.runtime.agents.AgentExecutionRequest;
 import io.lifeengine.runtime.agents.AgentExecutionResult;
 import io.lifeengine.runtime.agents.AgentExecutor;
@@ -15,6 +16,7 @@ import io.lifeengine.runtime.prompts.PromptTemplateRegistry;
 import io.lifeengine.runtime.workflow.WorkflowRunContext;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -33,6 +35,7 @@ import reactor.core.publisher.Mono;
 public class CryptoFinalSummaryAgent implements AgentExecutor {
 
     public static final String AGENT_ID = "crypto-final-summary-agent";
+    static final String DISCLAIMER = "This is market analysis, not financial advice.";
 
     private final LlmClient llmClient;
     private final ObjectMapper mapper;
@@ -80,21 +83,43 @@ public class CryptoFinalSummaryAgent implements AgentExecutor {
         return LlmAgentSupport.callLlm(
                         ctx, request.stageId(), AGENT_ID, llmClient, messages, template)
                 .flatMap(response -> {
+                    String raw = response.content();
+                    String canonical;
+                    boolean fallbackUsed = false;
+                    String parseError = null;
+                    String responsePreview;
                     try {
                         StrictAgentJson.CryptoFinalSummaryOutput parsed =
-                                StrictAgentJson.parseCryptoFinalSummary(response.content());
-                        String canonical = StrictAgentJson.canonicalJson(response.content());
-                        ctx.putAgentOutput(AGENT_ID, canonical);
-
-                        Map<String, String> attrs = new LinkedHashMap<>();
-                        attrs.put("agentId", AGENT_ID);
-                        attrs.put("responsePreview", WorkflowRunContext.truncate(parsed.response(), 500));
-                        ctx.emit(EventType.AGENT_SUCCEEDED, attrs, false);
-
-                        return Mono.just(AgentExecutionResult.ok(AGENT_ID, canonical));
+                                StrictAgentJson.parseCryptoFinalSummary(raw);
+                        canonical = StrictAgentJson.canonicalJson(raw);
+                        responsePreview = parsed.response();
                     } catch (IllegalArgumentException e) {
-                        return agentParseFailed(ctx, e);
+                        // The model emitted prose (e.g. "Warning: ..."). Wrap it in a
+                        // deterministic {"response": "..."} envelope so the workflow still
+                        // reaches RUN_SUCCEEDED. The disclaimer is appended if missing so
+                        // the operator-facing contract is preserved regardless of model
+                        // output strictness. Observability: AGENT_SUCCEEDED carries
+                        // fallback=true and parseError so this branch is visible in events.
+                        fallbackUsed = true;
+                        parseError = e.getMessage();
+                        canonical = buildFinalSummaryFallback(mapper, raw);
+                        responsePreview = extractResponseText(canonical);
                     }
+                    ctx.putAgentOutput(AGENT_ID, canonical);
+
+                    Map<String, String> attrs = new LinkedHashMap<>();
+                    attrs.put("agentId", AGENT_ID);
+                    attrs.put("responsePreview", WorkflowRunContext.truncate(responsePreview, 500));
+                    if (fallbackUsed) {
+                        attrs.put("fallback", "true");
+                        attrs.put(
+                                "parseError",
+                                WorkflowRunContext.truncate(
+                                        parseError == null ? "unknown" : parseError, 240));
+                    }
+                    ctx.emit(EventType.AGENT_SUCCEEDED, attrs, false);
+
+                    return Mono.just(AgentExecutionResult.ok(AGENT_ID, canonical));
                 })
                 .onErrorResume(error -> {
                     if (error instanceof IllegalArgumentException) {
@@ -106,9 +131,37 @@ public class CryptoFinalSummaryAgent implements AgentExecutor {
                 });
     }
 
-    private Mono<AgentExecutionResult> agentParseFailed(WorkflowRunContext ctx, IllegalArgumentException e) {
-        String msg = AGENT_ID + ": " + e.getMessage();
-        ctx.emit(EventType.AGENT_FAILED, Map.of("agentId", AGENT_ID, "error", msg), false);
-        return Mono.error(new IllegalArgumentException(msg, e));
+    /**
+     * Build a deterministic {@code {"response": "..."}} envelope from raw model prose. Used as
+     * fallback when the model violates the strict-JSON contract for the final-summary stage.
+     * Always preserves the operator-facing disclaimer — appends it iff not already present.
+     *
+     * <p>Visible to tests; not part of the public API of this agent.
+     */
+    static String buildFinalSummaryFallback(ObjectMapper mapper, String rawModelOutput) {
+        String cleaned = rawModelOutput == null ? "" : rawModelOutput.trim();
+        if (cleaned.isEmpty()) {
+            cleaned = "(no model output)";
+        }
+        if (!cleaned.toLowerCase(Locale.ROOT).contains(DISCLAIMER.toLowerCase(Locale.ROOT))) {
+            String separator;
+            if (cleaned.endsWith(".") || cleaned.endsWith("!") || cleaned.endsWith("?")) {
+                separator = " ";
+            } else {
+                separator = ". ";
+            }
+            cleaned = cleaned + separator + DISCLAIMER;
+        }
+        ObjectNode out = mapper.createObjectNode();
+        out.put("response", cleaned);
+        return out.toString();
+    }
+
+    private String extractResponseText(String canonicalJson) {
+        try {
+            return mapper.readTree(canonicalJson).path("response").asText("");
+        } catch (Exception e) {
+            return "";
+        }
     }
 }

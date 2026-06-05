@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -95,6 +96,133 @@ class CryptoMarketReviewWorkflowTest {
 
         Assertions.assertThat(workflows).isNotNull()
                 .anyMatch(w -> CryptoMarketReviewModule.WORKFLOW_ID.equals(w.workflowId()));
+    }
+
+    @Test
+    void finalSummaryFallback_onProseResponse_stillReachesRunSucceeded() throws Exception {
+        enqueueLlm(analystResponseJson());
+        enqueueLlm(riskReviewResponseJson());
+        // Final-summary stage receives free-text prose (the real-world Qwen2.5-Coder-3B
+        // failure mode that surfaced after the analyst context-window fix). The deterministic
+        // fallback in CryptoFinalSummaryAgent must wrap the prose into {"response": "..."}
+        // and the run must reach SUCCEEDED rather than FAILED.
+        String prose = "Warning: BTCUSDT trades inside a defined range; monitor for breakout.";
+        enqueueLlm(prose);
+
+        UUID runId = startMarketReviewRun();
+        awaitTerminal(runId, RunStatus.SUCCEEDED);
+
+        List<RuntimeEventResponse> events = collectEvents(runId);
+        List<String> types = events.stream().map(RuntimeEventResponse::type).toList();
+
+        Assertions.assertThat(types).contains("RUN_STARTED", "RUN_SUCCEEDED");
+        long stageSucceeded = types.stream().filter("STAGE_SUCCEEDED"::equals).count();
+        Assertions.assertThat(stageSucceeded)
+                .as("all 5 stages SUCCEEDED even though final-summary LLM emitted prose")
+                .isEqualTo(5);
+
+        // The agent emits AGENT_SUCCEEDED with fallback=true so operators can see that the
+        // strict-JSON contract was rescued by the deterministic envelope.
+        RuntimeEventResponse finalSummarySucceeded = events.stream()
+                .filter(e -> "AGENT_SUCCEEDED".equals(e.type()))
+                .filter(e -> "crypto-final-summary-agent".equals(e.agentId()))
+                .findFirst()
+                .orElseThrow();
+        Assertions.assertThat(finalSummarySucceeded.payload().get("fallback")).isEqualTo("true");
+        Assertions.assertThat(finalSummarySucceeded.payload().get("parseError"))
+                .as("parseError telemetry recorded for observability")
+                .isNotNull();
+
+        // The persisted final-summary stage output must be valid JSON containing the original
+        // prose plus the appended disclaimer.
+        com.fasterxml.jackson.databind.JsonNode detail = webTestClient.get()
+                .uri("/api/runtime/runs/{runId}", runId)
+                .accept(MediaType.APPLICATION_JSON)
+                .exchange().expectStatus().isOk()
+                .expectBody(com.fasterxml.jackson.databind.JsonNode.class)
+                .returnResult().getResponseBody();
+        com.fasterxml.jackson.databind.JsonNode finalStage = null;
+        for (com.fasterxml.jackson.databind.JsonNode stage : detail.get("agentStages")) {
+            if ("final-summary".equals(stage.path("stageId").asText())) {
+                finalStage = stage;
+                break;
+            }
+        }
+        Assertions.assertThat(finalStage).as("final-summary stage present").isNotNull();
+        Assertions.assertThat(finalStage.get("status").asText()).isEqualTo("SUCCEEDED");
+        com.fasterxml.jackson.databind.JsonNode parsedOutput = JSON.readTree(finalStage.get("output").asText());
+        Assertions.assertThat(parsedOutput.get("response").asText())
+                .startsWith("Warning: BTCUSDT")
+                .endsWith("This is market analysis, not financial advice.");
+    }
+
+    @Test
+    void analystSeesLeanMarketContext_noPersistenceMetadata_underTokenBudget() throws Exception {
+        enqueueLlm(analystResponseJson());
+        enqueueLlm(riskReviewResponseJson());
+        enqueueLlm(finalSummaryResponseJson());
+
+        UUID runId = startMarketReviewRun();
+        awaitTerminal(runId, RunStatus.SUCCEEDED);
+
+        // The first LLM request the workflow issues is the analyst's; capture it from the
+        // mock LLM and inspect the user-message that the analyst actually saw.
+        RecordedRequest analystRequest = mockLlm.takeRequest(2, TimeUnit.SECONDS);
+        Assertions.assertThat(analystRequest).as("analyst LLM request reached mockLlm").isNotNull();
+        com.fasterxml.jackson.databind.JsonNode body =
+                JSON.readTree(analystRequest.getBody().readUtf8());
+        com.fasterxml.jackson.databind.JsonNode messages = body.get("messages");
+        Assertions.assertThat(messages).isNotNull();
+        Assertions.assertThat(messages.size()).isEqualTo(2);
+        String userContent = messages.get(1).get("content").asText();
+        com.fasterxml.jackson.databind.JsonNode marketContext = JSON.readTree(userContent);
+
+        // Lean shape: top-level keys only (no extras).
+        Assertions.assertThat((Iterable<String>) marketContext::fieldNames)
+                .as("marketContext top-level fields")
+                .containsExactlyInAnyOrder(
+                        "symbol", "timeframe", "price", "ticker24h",
+                        "watchlist", "zones", "observations", "journal", "indicators");
+
+        // price is a flat number, not an object with timestamps/source.
+        Assertions.assertThat(marketContext.get("price").isNumber()).isTrue();
+        Assertions.assertThat(marketContext.get("ticker24h").has("priceChangePct24h")).isTrue();
+        Assertions.assertThat(marketContext.get("ticker24h").has("source")).isFalse();
+        Assertions.assertThat(marketContext.get("ticker24h").has("observedAt")).isFalse();
+
+        // Watchlist is filtered to the current symbol with minimal fields only.
+        com.fasterxml.jackson.databind.JsonNode watchlist = marketContext.get("watchlist");
+        Assertions.assertThat(watchlist.size()).as("watchlist filtered to current symbol").isEqualTo(1);
+        Assertions.assertThat(watchlist.get(0).get("symbol").asText()).isEqualTo("BTCUSDT");
+        Assertions.assertThat(watchlist.get(0).has("sectorTheme")).isFalse();
+        Assertions.assertThat(watchlist.get(0).has("priority")).isFalse();
+        Assertions.assertThat(watchlist.get(0).has("notes")).isFalse();
+
+        // The persistence-metadata fields the projection must strip from EVERY array entry.
+        String[] noiseFields = {
+            "id", "createdAt", "updatedAt", "validFrom", "validUntil",
+            "valueJson", "tags", "linkedWatchlistId", "entryTime", "computedAt",
+            "spreadBps", "volumeQuote24h", "venue"
+        };
+        String[] arraySections = {"watchlist", "zones", "observations", "journal", "indicators"};
+        for (String section : arraySections) {
+            com.fasterxml.jackson.databind.JsonNode arr = marketContext.get(section);
+            Assertions.assertThat(arr.isArray()).as("%s is an array", section).isTrue();
+            for (int i = 0; i < arr.size(); i++) {
+                com.fasterxml.jackson.databind.JsonNode entry = arr.get(i);
+                for (String noise : noiseFields) {
+                    Assertions.assertThat(entry.has(noise))
+                            .as("%s[%d] must NOT contain noise field %s", section, i, noise)
+                            .isFalse();
+                }
+            }
+        }
+
+        // Hard byte-budget: ensure the lean prompt+output sum stays well under the 2048-token
+        // ceiling at the observed ~2.5 chars/token rate, without trusting any specific tokenizer.
+        Assertions.assertThat(userContent.length())
+                .as("lean marketContext stays small (<=1500 chars => ~600 tokens)")
+                .isLessThanOrEqualTo(1500);
     }
 
     @Test
@@ -200,6 +328,10 @@ class CryptoMarketReviewWorkflowTest {
     }
 
     private static Dispatcher cryptobotDispatcher() {
+        // Fixture deliberately includes "fat" persistence-style fields (id, createdAt, updatedAt,
+        // sectorTheme, priority, validFrom, valueJson, …). The lean projection inside
+        // LoadCryptoMarketContextAgent must strip these before they reach the analyst LLM stage —
+        // see analystSeesLeanMarketContext() below for the assertion.
         return new Dispatcher() {
             @Override
             public MockResponse dispatch(RecordedRequest request) {
@@ -211,23 +343,62 @@ class CryptoMarketReviewWorkflowTest {
                 }
                 if (path.startsWith("/api/cryptobot/watchlist")) {
                     return json("["
-                            + "{\"symbol\":\"BTCUSDT\",\"displayName\":\"Bitcoin\",\"assetType\":\"CRYPTO\",\"exchange\":\"BINANCE\"}"
+                            + "{\"id\":\"f1eee000-0001-7001-8001-000000000001\","
+                            + "\"symbol\":\"BTCUSDT\",\"displayName\":\"Bitcoin\","
+                            + "\"assetType\":\"CRYPTO\",\"sectorTheme\":\"CRYPTO_CORE\","
+                            + "\"exchange\":\"BINANCE\",\"priority\":100,\"active\":true,"
+                            + "\"notes\":null,\"createdAt\":\"2026-01-01T00:00:00Z\","
+                            + "\"updatedAt\":\"2026-01-01T00:00:00Z\"},"
+                            + "{\"id\":\"f1eee000-0001-7001-8001-000000000002\","
+                            + "\"symbol\":\"ETHUSDT\",\"displayName\":\"Ethereum\","
+                            + "\"assetType\":\"CRYPTO\",\"sectorTheme\":\"CRYPTO_CORE\","
+                            + "\"exchange\":\"BINANCE\",\"priority\":100,\"active\":true,"
+                            + "\"notes\":null,\"createdAt\":\"2026-01-01T00:00:00Z\","
+                            + "\"updatedAt\":\"2026-01-01T00:00:00Z\"}"
                             + "]");
                 }
                 if (path.startsWith("/api/cryptobot/zones")) {
-                    return json("[" + "{\"symbol\":\"BTCUSDT\",\"timeframe\":\"1h\",\"zoneKind\":\"SUPPORT\","
-                            + "\"lowerBound\":60000.0,\"upperBound\":62000.0,\"confidence\":0.6}" + "]");
+                    return json("["
+                            + "{\"id\":\"f1eee000-0001-7001-8002-000000000001\","
+                            + "\"symbol\":\"BTCUSDT\",\"timeframe\":\"1h\",\"zoneKind\":\"SUPPORT\","
+                            + "\"lowerBound\":60000.0,\"upperBound\":62000.0,\"confidence\":0.6,"
+                            + "\"validFrom\":\"2026-01-01T00:00:00Z\",\"validUntil\":null,"
+                            + "\"label\":\"Local demand shelf\","
+                            + "\"createdAt\":\"2026-01-01T00:00:00Z\","
+                            + "\"updatedAt\":\"2026-01-01T00:00:00Z\"}"
+                            + "]");
                 }
                 if (path.startsWith("/api/cryptobot/observations")) {
-                    return json("[" + "{\"symbol\":\"BTCUSDT\",\"venue\":\"BINANCE\","
-                            + "\"observedAt\":\"2026-01-01T00:00:00Z\",\"lastPrice\":67800.0}" + "]");
+                    return json("["
+                            + "{\"id\":\"f1eee000-0001-7001-8005-000000000001\","
+                            + "\"symbol\":\"BTCUSDT\",\"venue\":\"BINANCE\","
+                            + "\"observedAt\":\"2026-01-01T00:00:00Z\",\"timeframe\":\"1h\","
+                            + "\"lastPrice\":67800.0,\"changePct24h\":1.2,"
+                            + "\"volumeQuote24h\":2.85E10,\"spreadBps\":1.4,"
+                            + "\"liquidityScore\":0.92,\"regime\":\"RANGE\","
+                            + "\"createdAt\":\"2026-01-01T00:00:00Z\"}"
+                            + "]");
                 }
                 if (path.startsWith("/api/cryptobot/journal")) {
-                    return json("[" + "{\"symbol\":\"BTCUSDT\",\"title\":\"range trade\",\"sentiment\":\"NEUTRAL\"}"
+                    return json("["
+                            + "{\"id\":\"f1eee000-0001-7001-8003-000000000001\","
+                            + "\"symbol\":\"BTCUSDT\",\"entryTime\":\"2026-01-01T00:00:00Z\","
+                            + "\"title\":\"Range trade hypothesis\","
+                            + "\"body\":\"Bias unchanged; waiting for break.\","
+                            + "\"sentiment\":\"NEUTRAL\",\"tags\":\"range,observation\","
+                            + "\"linkedWatchlistId\":\"f1eee000-0001-7001-8001-000000000001\","
+                            + "\"createdAt\":\"2026-01-01T00:00:00Z\","
+                            + "\"updatedAt\":\"2026-01-01T00:00:00Z\"}"
                             + "]");
                 }
                 if (path.startsWith("/api/cryptobot/indicators")) {
-                    return json("[" + "{\"symbol\":\"BTCUSDT\",\"indicatorName\":\"RSI\",\"valueNumeric\":52.3}"
+                    return json("["
+                            + "{\"id\":\"f1eee000-0001-7001-8004-000000000001\","
+                            + "\"symbol\":\"BTCUSDT\",\"timeframe\":\"1h\","
+                            + "\"indicatorName\":\"RSI\",\"period\":14,"
+                            + "\"computedAt\":\"2026-01-01T00:00:00Z\","
+                            + "\"valueNumeric\":52.3,\"valueJson\":null,"
+                            + "\"createdAt\":\"2026-01-01T00:00:00Z\"}"
                             + "]");
                 }
                 return new MockResponse().setResponseCode(404);

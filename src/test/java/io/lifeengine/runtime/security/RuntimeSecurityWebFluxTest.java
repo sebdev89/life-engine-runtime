@@ -381,6 +381,66 @@ class RuntimeSecurityWebFluxTest {
                 .isUnauthorized();
     }
 
+    // --- Global Runtime Event Spine -------------------------------------------------------
+    //
+    // The Mission Control / Crypto Watch panes connect through the same SSE machinery as the
+    // per-run stream. The JWT filter has been extended so {@code ?access_token=} is honoured
+    // for {@code /api/runtime/events/stream} too — these tests pin that contract.
+
+    @Test
+    void streamGlobalEvents_withoutToken_returns401() {
+        webTestClient
+                .get()
+                .uri("/api/runtime/events/stream")
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .exchange()
+                .expectStatus()
+                .isUnauthorized();
+    }
+
+    @Test
+    void streamGlobalEvents_withAccessTokenQueryParam_returns200() {
+        String operatorBearer = RuntimeTestJwt.bearer(List.of(RuntimeAuthorities.OPERATOR));
+        String rawToken = operatorBearer.substring("Bearer ".length());
+
+        webTestClient
+                .get()
+                .uri(
+                        uriBuilder ->
+                                uriBuilder
+                                        .path("/api/runtime/events/stream")
+                                        .queryParam("access_token", rawToken)
+                                        .build())
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .exchange()
+                .expectStatus()
+                .isOk()
+                .expectHeader()
+                .contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM);
+    }
+
+    @Test
+    void streamGlobalEvents_withWorkflowPrefix_returns200() {
+        String viewerBearer = RuntimeTestJwt.bearer(List.of(RuntimeAuthorities.VIEWER));
+        String rawToken = viewerBearer.substring("Bearer ".length());
+
+        webTestClient
+                .get()
+                .uri(
+                        uriBuilder ->
+                                uriBuilder
+                                        .path("/api/runtime/events/stream")
+                                        .queryParam("workflowPrefix", "crypto.")
+                                        .queryParam("access_token", rawToken)
+                                        .build())
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .exchange()
+                .expectStatus()
+                .isOk()
+                .expectHeader()
+                .contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM);
+    }
+
     private UUID startNoLlmRun(String authority) {
         return webTestClient
                 .post()

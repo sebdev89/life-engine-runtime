@@ -30,7 +30,13 @@ class WorkflowRouterTest {
     @Test
     void start_unknownWorkflow_throws() {
         Assertions.assertThatThrownBy(
-                        () -> router.start("example.vertical.workflow", UUID.randomUUID(), "in", "corr"))
+                        () ->
+                                router.start(
+                                        "example.vertical.workflow",
+                                        UUID.randomUUID(),
+                                        "in",
+                                        "corr",
+                                        null))
                 .isInstanceOf(UnknownWorkflowException.class);
     }
 
@@ -46,7 +52,8 @@ class WorkflowRouterTest {
                         "Vertical test workflow"));
 
         UUID runId = UUID.randomUUID();
-        String label = router.start("example.vertical.workflow", runId, "hello", "corr-1");
+        String label =
+                router.start("example.vertical.workflow", runId, "hello", "corr-1", null);
 
         Assertions.assertThat(label).isEqualTo("definition");
         Mockito.verify(definitionExecutor)
@@ -54,7 +61,8 @@ class WorkflowRouterTest {
                         runId,
                         workflowRegistry.require("example.vertical.workflow"),
                         "hello",
-                        "corr-1");
+                        "corr-1",
+                        null);
         Mockito.verifyNoInteractions(fakeExecutor);
     }
 
@@ -64,7 +72,7 @@ class WorkflowRouterTest {
                 WorkflowDefinition.llmDemo(
                         WorkflowIds.DEMO_LLM, List.of(WorkflowStage.agent("summarizer-agent", 1))));
 
-        String label = router.start(WorkflowIds.DEMO_LLM, UUID.randomUUID(), "in", "corr");
+        String label = router.start(WorkflowIds.DEMO_LLM, UUID.randomUUID(), "in", "corr", null);
 
         Assertions.assertThat(label).isEqualTo("llm");
     }

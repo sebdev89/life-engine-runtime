@@ -2,6 +2,7 @@ package io.lifeengine.runtime.ext.cryptomarketreview.stages;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.lifeengine.runtime.agents.AgentExecutionRequest;
 import io.lifeengine.runtime.agents.AgentExecutionResult;
@@ -20,6 +21,7 @@ import io.lifeengine.runtime.tools.ToolRegistry;
 import io.lifeengine.runtime.workflow.WorkflowRunContext;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -121,16 +123,27 @@ public class LoadCryptoMarketContextAgent implements AgentExecutor {
             String timeframe,
             Tuple7<String, String, String, String, String, String, String> tuple) {
         try {
+            // Project the seven raw cryptobot tool outputs into a lean marketContext for the
+            // downstream LLM stages. We keep only the fields the analyst / risk-review /
+            // final-summary prompts actually use, and drop the noisy persistence metadata
+            // (id, createdAt, updatedAt, source, audit timestamps) that otherwise pushes the
+            // analyst prompt over the vLLM context window. See
+            // docs/operations/local-runbook.md for the rationale; this projection is the
+            // single source of truth for what the LLM sees.
             ObjectNode marketContext = mapper.createObjectNode();
             marketContext.put("symbol", symbol);
             marketContext.put("timeframe", timeframe);
-            marketContext.set("price", parseOrObject(tuple.getT1()));
-            marketContext.set("ticker24h", parseOrObject(tuple.getT2()));
-            marketContext.set("watchlist", parseOrArray(tuple.getT3()));
-            marketContext.set("zones", parseOrArray(tuple.getT4()));
-            marketContext.set("observations", parseOrArray(tuple.getT5()));
-            marketContext.set("journal", parseOrArray(tuple.getT6()));
-            marketContext.set("indicators", parseOrArray(tuple.getT7()));
+            setLeanPrice(marketContext, tuple.getT1());
+            marketContext.set("ticker24h", projectTicker24h(parseOrObject(tuple.getT2())));
+            marketContext.set("watchlist", projectWatchlist(parseOrArray(tuple.getT3()), symbol));
+            marketContext.set("zones", projectArray(parseOrArray(tuple.getT4()), this::projectZone));
+            marketContext.set(
+                    "observations",
+                    projectArray(parseOrArray(tuple.getT5()), this::projectObservation));
+            marketContext.set("journal", projectArray(parseOrArray(tuple.getT6()), this::projectJournalEntry));
+            marketContext.set(
+                    "indicators",
+                    projectArray(parseOrArray(tuple.getT7()), this::projectIndicator));
 
             String json = mapper.writeValueAsString(marketContext);
             ctx.putAgentOutput(AGENT_ID, json);
@@ -143,11 +156,114 @@ public class LoadCryptoMarketContextAgent implements AgentExecutor {
             attrs.put("zonesCount", Integer.toString(marketContext.get("zones").size()));
             attrs.put("observationsCount", Integer.toString(marketContext.get("observations").size()));
             attrs.put("indicatorsCount", Integer.toString(marketContext.get("indicators").size()));
+            attrs.put("contextChars", Integer.toString(json.length()));
             ctx.emit(EventType.AGENT_SUCCEEDED, attrs, false);
 
             return Mono.just(AgentExecutionResult.ok(AGENT_ID, json));
         } catch (Exception e) {
             return failAgent(ctx, "failed to assemble marketContext: " + e.getMessage(), e);
+        }
+    }
+
+    private void setLeanPrice(ObjectNode marketContext, String priceJson) {
+        JsonNode node = parseOrObject(priceJson);
+        JsonNode price = node.get("price");
+        if (price != null && price.isNumber()) {
+            marketContext.set("price", price);
+        } else {
+            marketContext.putNull("price");
+        }
+    }
+
+    private ObjectNode projectTicker24h(JsonNode node) {
+        ObjectNode out = mapper.createObjectNode();
+        copyNumeric(node, out, "priceChangePct24h");
+        copyNumeric(node, out, "volumeBase24h");
+        return out;
+    }
+
+    private ArrayNode projectWatchlist(JsonNode list, String currentSymbol) {
+        ArrayNode out = mapper.createArrayNode();
+        if (list == null || !list.isArray()) {
+            return out;
+        }
+        String target = currentSymbol == null ? "" : currentSymbol.toUpperCase(Locale.ROOT);
+        for (JsonNode entry : list) {
+            String entrySymbol = entry.path("symbol").asText("").toUpperCase(Locale.ROOT);
+            if (!entrySymbol.equals(target)) {
+                continue; // single-symbol review: drop unrelated rows.
+            }
+            ObjectNode lean = mapper.createObjectNode();
+            copyText(entry, lean, "symbol");
+            copyText(entry, lean, "displayName");
+            copyText(entry, lean, "assetType");
+            out.add(lean);
+        }
+        return out;
+    }
+
+    private ObjectNode projectZone(JsonNode entry) {
+        ObjectNode lean = mapper.createObjectNode();
+        copyText(entry, lean, "zoneKind");
+        copyNumeric(entry, lean, "lowerBound");
+        copyNumeric(entry, lean, "upperBound");
+        copyNumeric(entry, lean, "confidence");
+        copyText(entry, lean, "label");
+        return lean;
+    }
+
+    private ObjectNode projectObservation(JsonNode entry) {
+        ObjectNode lean = mapper.createObjectNode();
+        // observedAt is the only timestamp the analyst actually needs (freshness signal).
+        copyText(entry, lean, "observedAt");
+        copyNumeric(entry, lean, "lastPrice");
+        copyNumeric(entry, lean, "changePct24h");
+        copyNumeric(entry, lean, "liquidityScore");
+        copyText(entry, lean, "regime");
+        return lean;
+    }
+
+    private ObjectNode projectJournalEntry(JsonNode entry) {
+        ObjectNode lean = mapper.createObjectNode();
+        copyText(entry, lean, "title");
+        copyText(entry, lean, "body");
+        copyText(entry, lean, "sentiment");
+        return lean;
+    }
+
+    private ObjectNode projectIndicator(JsonNode entry) {
+        ObjectNode lean = mapper.createObjectNode();
+        copyText(entry, lean, "indicatorName");
+        copyNumeric(entry, lean, "period");
+        copyNumeric(entry, lean, "valueNumeric");
+        return lean;
+    }
+
+    private ArrayNode projectArray(JsonNode list, java.util.function.Function<JsonNode, ObjectNode> projector) {
+        ArrayNode out = mapper.createArrayNode();
+        if (list == null || !list.isArray()) {
+            return out;
+        }
+        for (JsonNode entry : list) {
+            if (entry == null || !entry.isObject()) {
+                continue;
+            }
+            out.add(projector.apply(entry));
+        }
+        return out;
+    }
+
+    private void copyText(JsonNode src, ObjectNode dst, String field) {
+        JsonNode v = src.get(field);
+        if (v != null && v.isTextual() && !v.asText().isBlank()) {
+            dst.put(field, v.asText());
+        }
+    }
+
+    private void copyNumeric(JsonNode src, ObjectNode dst, String field) {
+        JsonNode v = src.get(field);
+        if (v != null && v.isNumber()) {
+            dst.set(field, v);
         }
     }
 

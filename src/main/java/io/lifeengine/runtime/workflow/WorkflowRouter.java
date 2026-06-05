@@ -5,6 +5,7 @@ import io.lifeengine.runtime.llm.LlmClient;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Component;
 
 /** Routes workflowId to registered definition + executor — no silent fallback. */
@@ -30,15 +31,24 @@ public class WorkflowRouter {
     }
 
     /**
+     * @param caller the inbound caller's {@link Authentication} captured by
+     *     {@code RunService.startRun} from {@code ReactiveSecurityContextHolder} (Phase-1 JWT
+     *     pass-through). May be {@code null} when security is disabled or the caller is
+     *     anonymous.
      * @return executor label stored on run metadata ({@code fake}, {@code llm}, or {@code definition})
      */
-    public String start(String workflowId, UUID runId, String input, String correlationId) {
+    public String start(
+            String workflowId,
+            UUID runId,
+            String input,
+            String correlationId,
+            Authentication caller) {
         log.info("Starting workflow {} runId={} correlationId={}", workflowId, runId, correlationId);
 
         if (WorkflowIds.DEMO_NO_LLM.equals(workflowId)) {
             workflowRegistry.require(workflowId);
             log.info("Routing runId={} to FakeWorkflowExecutor (explicit demo, no LLM)", runId);
-            fakeWorkflowExecutor.schedule(runId, correlationId);
+            fakeWorkflowExecutor.schedule(runId, correlationId, caller);
             return "fake";
         }
 
@@ -48,7 +58,7 @@ public class WorkflowRouter {
                 runId,
                 workflowId,
                 llmClient.defaultModel());
-        definitionDrivenWorkflowExecutor.schedule(runId, definition, input, correlationId);
+        definitionDrivenWorkflowExecutor.schedule(runId, definition, input, correlationId, caller);
         if (WorkflowIds.DEMO_LLM.equals(workflowId)) {
             return "llm";
         }
