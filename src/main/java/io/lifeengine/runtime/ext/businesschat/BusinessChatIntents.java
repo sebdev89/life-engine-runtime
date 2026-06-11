@@ -14,7 +14,15 @@ public final class BusinessChatIntents {
                     "schedule",
                     "support",
                     "complaint",
-                    "human_handoff");
+                    "human_handoff",
+                    "out_of_domain",
+                    "unclear",
+                    "abusive",
+                    "emergency",
+                    "legal_sensitive");
+
+    public static final List<String> GUARDRAIL =
+            List.of("out_of_domain", "unclear", "abusive", "emergency", "legal_sensitive");
 
     static final String PROMPT_ENUM = String.join(" | ", ALL);
 
@@ -29,6 +37,13 @@ public final class BusinessChatIntents {
             - support: general service questions not covered by pricing, booking, location, or schedule.
             - complaint: dissatisfaction, bad experience, or service problems.
             - human_handoff: explicit request to speak with a person or agent.
+            - out_of_domain: topics unrelated to the business (sports trivia, general knowledge,
+              medical prescriptions, weather, entertainment) that are not in the knowledge base.
+            - unclear: gibberish, too vague, or unintelligible message with no discernible request.
+            - abusive: insults, harassment, or hostile language toward the bot or staff.
+            - emergency: urgent risk, violence, self-harm, or immediate danger signals.
+            - legal_sensitive: requests for binding legal advice on whether to sue, file charges,
+              or take legal action on a personal case (not general service information).
             """
                     .strip();
 

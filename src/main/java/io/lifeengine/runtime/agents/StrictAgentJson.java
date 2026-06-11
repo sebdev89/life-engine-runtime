@@ -463,7 +463,12 @@ public final class StrictAgentJson {
                     "SCHEDULE",
                     "SUPPORT",
                     "COMPLAINT",
-                    "HUMAN_HANDOFF");
+                    "HUMAN_HANDOFF",
+                    "OUT_OF_DOMAIN",
+                    "UNCLEAR",
+                    "ABUSIVE",
+                    "EMERGENCY",
+                    "LEGAL_SENSITIVE");
 
     public static BusinessContextOutput parseBusinessContext(String raw) {
         JsonNode node = requireObject(raw);
@@ -561,7 +566,8 @@ public final class StrictAgentJson {
         if (!BUSINESS_INTENTS.contains(intent)) {
             throw new IllegalArgumentException(
                     "intent must be one of greeting, pricing, booking, location, schedule, support,"
-                            + " complaint, human_handoff (got: "
+                            + " complaint, human_handoff, out_of_domain, unclear, abusive, emergency,"
+                            + " legal_sensitive (got: "
                             + rawIntent
                             + ")");
         }

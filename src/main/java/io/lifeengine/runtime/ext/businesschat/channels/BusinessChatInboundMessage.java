@@ -47,6 +47,8 @@ public record BusinessChatInboundMessage(
                 conversationId.trim(),
                 new BusinessChatReplyIo.Customer(customerName.trim(), customerExternalId.trim()),
                 message.trim(),
+                null,
+                null,
                 null);
     }
 

@@ -33,6 +33,8 @@ class BusinessChatInboundMessageTest {
                         "conv-mail-1",
                         new BusinessChatReplyIo.Customer("Ana", "mail-ana"),
                         "Consulta",
+                        null,
+                        null,
                         null);
 
         BusinessChatInboundMessage inbound = BusinessChatInboundMessage.fromWorkflowInput(input);

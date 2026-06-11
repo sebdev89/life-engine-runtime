@@ -66,6 +66,13 @@ public class RuntimeRestController {
         return runService.cancelRun(runId).map(RunResponse::from);
     }
 
+    @PostMapping("/{runId}/events")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public Mono<Void> appendRunEvents(
+            @PathVariable UUID runId, @Valid @RequestBody AppendRunEventsRequest request) {
+        return runService.appendRunEvents(runId, request);
+    }
+
     @org.springframework.web.bind.annotation.ExceptionHandler(RunNotFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     public Mono<ApiError> notFound(RunNotFoundException ex) {

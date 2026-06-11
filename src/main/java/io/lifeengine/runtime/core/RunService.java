@@ -1,7 +1,10 @@
 package io.lifeengine.runtime.core;
 
+import io.lifeengine.runtime.api.AppendRunEventRequest;
+import io.lifeengine.runtime.api.AppendRunEventsRequest;
 import io.lifeengine.runtime.api.RunDetailResponse;
 import io.lifeengine.runtime.api.StartRunRequest;
+import io.lifeengine.runtime.ext.businesschat.BusinessChatObservabilityEvents;
 import io.lifeengine.runtime.domain.EventType;
 import io.lifeengine.runtime.domain.Run;
 import io.lifeengine.runtime.domain.RunStatus;
@@ -13,8 +16,12 @@ import io.lifeengine.runtime.workflow.WorkflowRouter;
 import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -147,6 +154,62 @@ public class RunService {
 
     public Mono<Run> getRun(UUID runId) {
         return getRunDetail(runId).map(RunDetailResponse::run);
+    }
+
+    public Mono<Void> appendRunEvents(UUID runId, AppendRunEventsRequest request) {
+        return Mono.fromCallable(
+                        () -> {
+                            Run run =
+                                    store.findRun(runId)
+                                            .orElseThrow(() -> new RunNotFoundException(runId));
+                            Set<String> seenDedupKeys = collectDedupKeys(store.eventsFor(runId));
+                            for (AppendRunEventRequest eventRequest : request.events()) {
+                                appendSingleEvent(run, eventRequest, seenDedupKeys);
+                            }
+                            return null;
+                        })
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
+    }
+
+    private void appendSingleEvent(
+            Run run, AppendRunEventRequest eventRequest, Set<String> seenDedupKeys) {
+        String dedupKey = eventRequest.attributes().get(BusinessChatObservabilityEvents.ATTR_DEDUP_KEY);
+        if (dedupKey != null && !dedupKey.isBlank() && seenDedupKeys.contains(dedupKey)) {
+            log.debug(
+                    "Skipping duplicate run event runId={} type={} dedupKey={}",
+                    run.id(),
+                    eventRequest.type(),
+                    dedupKey);
+            return;
+        }
+        Map<String, String> attrs = new LinkedHashMap<>(eventRequest.attributes());
+        attrs.putIfAbsent("workflowId", run.workflowId());
+        attrs.putIfAbsent("correlationId", run.correlationId());
+        boolean terminal = Boolean.TRUE.equals(eventRequest.terminal());
+        RuntimeEvent event =
+                RuntimeEvent.of(
+                        run.id(),
+                        eventRequest.type().trim(),
+                        Map.copyOf(attrs),
+                        terminal,
+                        "business-chat-service");
+        store.appendEvent(event);
+        eventPublisher.publish(event);
+        if (dedupKey != null && !dedupKey.isBlank()) {
+            seenDedupKeys.add(dedupKey);
+        }
+    }
+
+    private static Set<String> collectDedupKeys(List<RuntimeEvent> events) {
+        Set<String> keys = new HashSet<>();
+        for (RuntimeEvent event : events) {
+            String dedupKey = event.attributes().get(BusinessChatObservabilityEvents.ATTR_DEDUP_KEY);
+            if (dedupKey != null && !dedupKey.isBlank()) {
+                keys.add(dedupKey);
+            }
+        }
+        return keys;
     }
 
     public Mono<Run> cancelRun(UUID runId) {

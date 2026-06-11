@@ -60,6 +60,10 @@ public class BusinessHandoffService {
         HandoffReason reason = null;
         if ("human_handoff".equals(request.intent())) {
             reason = HandoffReason.HUMAN_HANDOFF;
+        } else if ("emergency".equals(request.intent())) {
+            reason = HandoffReason.EMERGENCY;
+        } else if ("legal_sensitive".equals(request.intent())) {
+            reason = HandoffReason.LEGAL_SENSITIVE;
         } else if (frustration) {
             reason = HandoffReason.FRUSTRATION;
         } else if (unknownQuery) {
@@ -118,7 +122,9 @@ public class BusinessHandoffService {
     }
 
     static boolean detectsUnknownQuery(EvaluationRequest request) {
-        if ("greeting".equals(request.intent()) || "human_handoff".equals(request.intent())) {
+        if ("greeting".equals(request.intent())
+                || "human_handoff".equals(request.intent())
+                || BusinessChatIntents.GUARDRAIL.contains(request.intent())) {
             return false;
         }
         if ("LOW".equals(request.confidence()) && !matchesKnowledge(request.message(), request.faqs())) {
@@ -174,7 +180,9 @@ public class BusinessHandoffService {
         FRUSTRATION,
         MULTIPLE_FAILURES,
         UNKNOWN_QUERY,
-        HUMAN_HANDOFF
+        HUMAN_HANDOFF,
+        EMERGENCY,
+        LEGAL_SENSITIVE
     }
 
     public record EvaluationRequest(

@@ -9,9 +9,10 @@ import io.lifeengine.runtime.agents.StrictAgentJson;
 import io.lifeengine.runtime.domain.EventType;
 import io.lifeengine.runtime.ext.businesschat.BusinessChatReplyIo;
 import io.lifeengine.runtime.ext.businesschat.BusinessChatReplyPrompts;
-import io.lifeengine.runtime.ext.businesschat.BusinessChatEvents;
+import io.lifeengine.runtime.ext.businesschat.BusinessChatObservabilityEvents;
 import io.lifeengine.runtime.ext.businesschat.BusinessConversationContext;
 import io.lifeengine.runtime.ext.businesschat.BusinessHandoffService;
+import io.lifeengine.runtime.ext.businesschat.BusinessReplyConfidenceService;
 import io.lifeengine.runtime.ext.businesschat.BusinessKnowledgeService;
 import io.lifeengine.runtime.llm.LlmClient;
 import io.lifeengine.runtime.llm.LlmMessage;
@@ -45,6 +46,7 @@ public class BusinessContextAgent implements AgentExecutor {
     private final BusinessKnowledgeService knowledgeService;
     private final BusinessConversationContext conversationContext;
     private final BusinessHandoffService handoffService;
+    private final BusinessReplyConfidenceService confidenceService;
 
     public BusinessContextAgent(
             LlmClient llmClient,
@@ -52,13 +54,15 @@ public class BusinessContextAgent implements AgentExecutor {
             PromptTemplateRegistry promptTemplateRegistry,
             BusinessKnowledgeService knowledgeService,
             BusinessConversationContext conversationContext,
-            BusinessHandoffService handoffService) {
+            BusinessHandoffService handoffService,
+            BusinessReplyConfidenceService confidenceService) {
         this.llmClient = llmClient;
         this.mapper = mapper;
         this.promptTemplateRegistry = promptTemplateRegistry;
         this.knowledgeService = knowledgeService;
         this.conversationContext = conversationContext;
         this.handoffService = handoffService;
+        this.confidenceService = confidenceService;
     }
 
     @Override
@@ -82,10 +86,11 @@ public class BusinessContextAgent implements AgentExecutor {
             return agentFailed(ctx, e);
         }
 
-        BusinessChatEvents.emitStarted(ctx, request.stageId(), parsed);
+        BusinessChatObservabilityEvents.emitConversationStarted(ctx, request.stageId(), parsed);
+        BusinessChatObservabilityEvents.emitKnowledgeLookup(ctx, request.stageId(), parsed, knowledge);
 
         List<BusinessConversationContext.Interaction> conversationHistory =
-                conversationContext.history(parsed.conversationId());
+                resolveConversationHistory(parsed);
 
         String userInput;
         try {
@@ -100,6 +105,10 @@ public class BusinessContextAgent implements AgentExecutor {
                             "externalId", parsed.customer().externalId()));
             payload.put("message", parsed.message());
             payload.put("conversationHistory", toHistoryMaps(conversationHistory));
+            Map<String, Object> botProfile = BusinessChatReplyIo.botProfileForLlm(parsed.botProfile());
+            if (botProfile != null) {
+                payload.put("botProfile", botProfile);
+            }
             payload.put("businessProfile", knowledgeService.profileForLlm(knowledge));
             userInput = mapper.writeValueAsString(payload);
         } catch (Exception e) {
@@ -121,13 +130,22 @@ public class BusinessContextAgent implements AgentExecutor {
                                 StrictAgentJson.BusinessContextOutput context =
                                         StrictAgentJson.parseBusinessContext(response.content());
 
+                                BusinessReplyConfidenceService.ReplyConfidence confidence =
+                                        confidenceService.evaluate(
+                                                parsed.message(),
+                                                toHistoryMaps(conversationHistory),
+                                                context.intent(),
+                                                knowledge.faqs(),
+                                                knowledge.catalogItems(),
+                                                null);
+
                                 BusinessHandoffService.HandoffDecision handoff =
                                         handoffService.evaluate(
                                                 new BusinessHandoffService.EvaluationRequest(
                                                         parsed.conversationId(),
                                                         parsed.message(),
                                                         context.intent(),
-                                                        context.confidence(),
+                                                        confidence.level(),
                                                         knowledge.faqs()));
 
                                 var combined = mapper.createObjectNode();
@@ -136,8 +154,14 @@ public class BusinessContextAgent implements AgentExecutor {
                                 combined.put("conversationId", parsed.conversationId());
                                 combined.put("message", parsed.message());
                                 combined.set("conversationHistory", mapper.valueToTree(toHistoryMaps(conversationHistory)));
+                                Map<String, Object> botProfile =
+                                        BusinessChatReplyIo.botProfileForLlm(parsed.botProfile());
+                                if (botProfile != null) {
+                                    combined.set("botProfile", mapper.valueToTree(botProfile));
+                                }
                                 combined.put("intent", context.intent());
-                                combined.put("confidence", context.confidence());
+                                combined.put("confidence", confidence.level());
+                                combined.put("confidenceReason", confidence.reason());
                                 combined.put("handoffRequired", handoff.handoffRequired());
                                 if (handoff.reason() != null) {
                                     combined.put("handoffReason", handoff.reason().name());
@@ -153,13 +177,15 @@ public class BusinessContextAgent implements AgentExecutor {
                                             mapper.valueToTree(knowledge.retrievedChunks()));
                                 }
 
-                                BusinessChatEvents.emitHandoff(
+                                BusinessChatObservabilityEvents.emitIntentDetected(
                                         ctx,
                                         request.stageId(),
                                         parsed,
-                                        handoff,
                                         context.intent(),
-                                        context.confidence());
+                                        confidence.level(),
+                                        confidence.reason(),
+                                        handoff.handoffRequired(),
+                                        handoff.reason() != null ? handoff.reason().name() : null);
 
                                 String canonical = mapper.writeValueAsString(combined);
                                 ctx.putAgentOutput(AGENT_ID, canonical);
@@ -167,7 +193,8 @@ public class BusinessContextAgent implements AgentExecutor {
                                 Map<String, String> attrs = new LinkedHashMap<>();
                                 attrs.put("agentId", AGENT_ID);
                                 attrs.put("intent", context.intent());
-                                attrs.put("confidence", context.confidence());
+                                attrs.put("confidence", confidence.level());
+                                attrs.put("confidenceReason", confidence.reason());
                                 attrs.put("handoffRequired", Boolean.toString(handoff.handoffRequired()));
                                 if (handoff.reason() != null) {
                                     attrs.put("handoffReason", handoff.reason().name());
@@ -189,6 +216,19 @@ public class BusinessContextAgent implements AgentExecutor {
                             }
                             return agentFailed(ctx, error);
                         });
+    }
+
+    private List<BusinessConversationContext.Interaction> resolveConversationHistory(
+            BusinessChatReplyIo.Input parsed) {
+        if (parsed.conversationHistory() != null) {
+            return parsed.conversationHistory().stream()
+                    .map(
+                            entry ->
+                                    new BusinessConversationContext.Interaction(
+                                            entry.customerMessage(), entry.botResponse()))
+                    .toList();
+        }
+        return conversationContext.history(parsed.conversationId());
     }
 
     private static List<Map<String, String>> toHistoryMaps(

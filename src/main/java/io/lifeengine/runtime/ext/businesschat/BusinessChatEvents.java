@@ -1,24 +1,21 @@
 package io.lifeengine.runtime.ext.businesschat;
 
 import io.lifeengine.runtime.agents.StrictAgentJson;
-import io.lifeengine.runtime.domain.EventType;
 import io.lifeengine.runtime.ext.businesschat.stages.BusinessContextAgent;
 import io.lifeengine.runtime.ext.businesschat.stages.BusinessReplyAgent;
 import io.lifeengine.runtime.workflow.WorkflowRunContext;
-import java.util.LinkedHashMap;
-import java.util.Map;
 
-/** Domain events for the business-chat workflow on the runtime event spine. */
+/**
+ * @deprecated Use {@link BusinessChatObservabilityEvents} directly. Kept for gradual migration.
+ */
+@Deprecated
 public final class BusinessChatEvents {
 
     private BusinessChatEvents() {}
 
     public static void emitStarted(
             WorkflowRunContext ctx, String stageId, BusinessChatReplyIo.Input input) {
-        ctx.emit(
-                EventType.BUSINESS_CHAT_STARTED,
-                baseAttrs(stageId, input),
-                false);
+        BusinessChatObservabilityEvents.emitConversationStarted(ctx, stageId, input);
     }
 
     public static void emitHandoff(
@@ -28,17 +25,7 @@ public final class BusinessChatEvents {
             BusinessHandoffService.HandoffDecision handoff,
             String intent,
             String confidence) {
-        if (!handoff.handoffRequired()) {
-            return;
-        }
-        Map<String, String> attrs = baseAttrs(stageId, input);
-        attrs.put("intent", intent);
-        attrs.put("confidence", confidence);
-        attrs.put("handoffRequired", "true");
-        if (handoff.reason() != null) {
-            attrs.put("handoffReason", handoff.reason().name());
-        }
-        ctx.emit(EventType.BUSINESS_CHAT_HANDOFF, attrs, false);
+        // Handoff is authoritative in business-chat-service; runtime no longer emits HANDOFF_DECISION.
     }
 
     public static void emitResponded(
@@ -47,29 +34,12 @@ public final class BusinessChatEvents {
             BusinessChatReplyIo.Input input,
             StrictAgentJson.BusinessReplyOutput reply,
             boolean handoffRequired) {
-        Map<String, String> attrs = baseAttrs(stageId, input);
-        attrs.put("intent", reply.intent());
-        attrs.put("confidence", reply.confidence());
-        attrs.put("handoffRequired", Boolean.toString(handoffRequired));
-        attrs.put("leadCaptured", Boolean.toString(reply.leadCaptured()));
-        attrs.put("responsePreview", WorkflowRunContext.truncate(reply.response(), 500));
-        ctx.emit(EventType.BUSINESS_CHAT_RESPONDED, attrs, false);
+        BusinessChatObservabilityEvents.emitResponseGenerated(ctx, stageId, input, reply, handoffRequired);
     }
 
     public static BusinessChatReplyIo.Input parseInput(
             com.fasterxml.jackson.databind.ObjectMapper mapper, String raw) throws Exception {
-        return BusinessChatReplyIo.readInput(mapper, raw);
-    }
-
-    private static Map<String, String> baseAttrs(String stageId, BusinessChatReplyIo.Input input) {
-        Map<String, String> attrs = new LinkedHashMap<>();
-        attrs.put("stageId", stageId);
-        attrs.put("botId", input.botId());
-        attrs.put("conversationId", input.conversationId());
-        attrs.put("channel", input.channel());
-        attrs.put("customerExternalId", input.customer().externalId());
-        attrs.put("messagePreview", WorkflowRunContext.truncate(input.message(), 500));
-        return attrs;
+        return BusinessChatObservabilityEvents.parseInput(mapper, raw);
     }
 
     public static final class Stages {

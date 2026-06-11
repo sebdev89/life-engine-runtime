@@ -83,6 +83,39 @@ class BusinessHandoffServiceTest {
                 BusinessHandoffService.HandoffReason.HUMAN_HANDOFF);
     }
 
+    @Test
+    void evaluate_detectsEmergencyIntent() {
+        assertHandoff(
+                handoffService.evaluate(
+                        request("conv-1", "necesito ayuda urgente", "emergency", "HIGH")),
+                BusinessHandoffService.HandoffReason.EMERGENCY);
+    }
+
+    @Test
+    void evaluate_detectsLegalSensitiveIntent() {
+        assertHandoff(
+                handoffService.evaluate(
+                        request(
+                                "conv-1",
+                                "¿Me conviene demandar a mi jefe?",
+                                "legal_sensitive",
+                                "HIGH")),
+                BusinessHandoffService.HandoffReason.LEGAL_SENSITIVE);
+    }
+
+    @Test
+    void evaluate_guardrailIntentsDoNotCountAsUnknownQuery() {
+        var decision =
+                handoffService.evaluate(
+                        request(
+                                "conv-guard",
+                                "¿Quién ganó el mundial 1998?",
+                                "out_of_domain",
+                                "HIGH"));
+        Assertions.assertThat(decision.handoffRequired()).isFalse();
+        Assertions.assertThat(handoffService.failureCount("conv-guard")).isZero();
+    }
+
     private BusinessHandoffService.EvaluationRequest request(
             String conversationId, String message, String intent, String confidence) {
         return new BusinessHandoffService.EvaluationRequest(

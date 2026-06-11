@@ -1,5 +1,6 @@
 package io.lifeengine.runtime.app;
 
+import io.lifeengine.runtime.ext.businesschat.prompts.BusinessPromptRegistryProperties;
 import io.lifeengine.runtime.llm.RuntimeLlmProperties;
 import io.lifeengine.runtime.security.RuntimeJwtProperties;
 import io.lifeengine.runtime.security.RuntimeSecurityProperties;
@@ -11,7 +12,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @EnableConfigurationProperties({
     RuntimeSecurityProperties.class,
     RuntimeJwtProperties.class,
-    RuntimeLlmProperties.class
+    RuntimeLlmProperties.class,
+    BusinessPromptRegistryProperties.class
 })
 public class RuntimeApplication {
 

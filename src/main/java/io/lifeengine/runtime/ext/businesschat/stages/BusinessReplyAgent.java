@@ -11,13 +11,18 @@ import io.lifeengine.runtime.domain.EventType;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.lifeengine.runtime.ext.businesschat.BusinessChatReplyIo;
 import io.lifeengine.runtime.ext.businesschat.BusinessChatReplyPrompts;
-import io.lifeengine.runtime.ext.businesschat.BusinessChatEvents;
+import io.lifeengine.runtime.ext.businesschat.BusinessChatObservabilityEvents;
+import io.lifeengine.runtime.ext.businesschat.BusinessChatReplyContractV1;
+import io.lifeengine.runtime.ext.businesschat.BusinessChatReplyIo;
 import io.lifeengine.runtime.ext.businesschat.BusinessConversationContext;
+import io.lifeengine.runtime.ext.businesschat.BusinessKnowledgeService;
+import io.lifeengine.runtime.ext.businesschat.BusinessReplyConfidenceService;
 import io.lifeengine.runtime.llm.LlmClient;
 import io.lifeengine.runtime.llm.LlmMessage;
 import io.lifeengine.runtime.prompts.PromptTemplate;
 import io.lifeengine.runtime.prompts.PromptTemplateRegistry;
 import io.lifeengine.runtime.workflow.WorkflowRunContext;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,16 +46,22 @@ public class BusinessReplyAgent implements AgentExecutor {
     private final ObjectMapper mapper;
     private final PromptTemplateRegistry promptTemplateRegistry;
     private final BusinessConversationContext conversationContext;
+    private final BusinessReplyConfidenceService confidenceService;
+    private final BusinessKnowledgeService knowledgeService;
 
     public BusinessReplyAgent(
             LlmClient llmClient,
             ObjectMapper mapper,
             PromptTemplateRegistry promptTemplateRegistry,
-            BusinessConversationContext conversationContext) {
+            BusinessConversationContext conversationContext,
+            BusinessReplyConfidenceService confidenceService,
+            BusinessKnowledgeService knowledgeService) {
         this.llmClient = llmClient;
         this.mapper = mapper;
         this.promptTemplateRegistry = promptTemplateRegistry;
         this.conversationContext = conversationContext;
+        this.confidenceService = confidenceService;
+        this.knowledgeService = knowledgeService;
     }
 
     @Override
@@ -104,6 +115,7 @@ public class BusinessReplyAgent implements AgentExecutor {
                                 try {
                                     canonical =
                                             finalizeReply(
+                                                    ctx.input(),
                                                     businessContext,
                                                     response.content(),
                                                     contextHandoffRequired,
@@ -112,10 +124,10 @@ public class BusinessReplyAgent implements AgentExecutor {
                                     return agentFailed(ctx, e);
                                 }
                                 try {
-                                    BusinessChatEvents.emitResponded(
+                                    BusinessChatObservabilityEvents.emitResponseGenerated(
                                             ctx,
                                             request.stageId(),
-                                            BusinessChatEvents.parseInput(mapper, ctx.input()),
+                                            BusinessChatObservabilityEvents.parseInput(mapper, ctx.input()),
                                             reply,
                                             contextHandoffRequired || reply.handoffRequired());
                                 } catch (Exception e) {
@@ -127,7 +139,17 @@ public class BusinessReplyAgent implements AgentExecutor {
                                 Map<String, String> attrs = new LinkedHashMap<>();
                                 attrs.put("agentId", AGENT_ID);
                                 attrs.put("intent", reply.intent());
-                                attrs.put("confidence", reply.confidence());
+                                try {
+                                    JsonNode canonicalNode = mapper.readTree(canonical);
+                                    attrs.put(
+                                            "confidence",
+                                            canonicalNode.path("confidence").asText(reply.confidence()));
+                                    attrs.put(
+                                            "confidenceReason",
+                                            canonicalNode.path("confidenceReason").asText(""));
+                                } catch (Exception e) {
+                                    attrs.put("confidence", reply.confidence());
+                                }
                                 attrs.put(
                                         "handoffRequired",
                                         Boolean.toString(contextHandoffRequired || reply.handoffRequired()));
@@ -153,6 +175,7 @@ public class BusinessReplyAgent implements AgentExecutor {
     }
 
     private String finalizeReply(
+            String sourceInputJson,
             String businessContextJson,
             String rawReply,
             boolean contextHandoffRequired,
@@ -162,8 +185,50 @@ public class BusinessReplyAgent implements AgentExecutor {
         if (contextHandoffRequired || replyHandoffRequired) {
             node.put("handoffRequired", true);
         }
+        BusinessReplyConfidenceService.ReplyConfidence confidence =
+                applyDeterministicConfidence(node, sourceInputJson, businessContextJson);
+        BusinessChatReplyContractV1.applyToReplyOutput(
+                mapper, node, sourceInputJson, businessContextJson, confidence);
         attachSourcesFromContext(node, businessContextJson);
         return mapper.writeValueAsString(node);
+    }
+
+    private BusinessReplyConfidenceService.ReplyConfidence applyDeterministicConfidence(
+            ObjectNode node, String sourceInputJson, String businessContextJson) throws Exception {
+        JsonNode sourceNode = mapper.readTree(sourceInputJson == null || sourceInputJson.isBlank() ? "{}" : sourceInputJson);
+        JsonNode contextNode = mapper.readTree(businessContextJson == null || businessContextJson.isBlank() ? "{}" : businessContextJson);
+        BusinessChatReplyIo.Input parsed = BusinessChatReplyIo.readInput(mapper, sourceInputJson);
+        BusinessKnowledgeService.KnowledgeBase knowledge =
+                knowledgeService.resolve(parsed.botId(), parsed.businessContext());
+        String message = sourceNode.path("message").asText("");
+        String intent = node.path("intent").asText(contextNode.path("intent").asText(""));
+        List<Map<String, String>> history = readHistory(sourceNode.path("conversationHistory"));
+
+        BusinessReplyConfidenceService.ReplyConfidence confidence =
+                confidenceService.evaluate(
+                        message,
+                        history,
+                        intent,
+                        knowledge.faqs(),
+                        knowledge.catalogItems(),
+                        null);
+        node.put("confidence", confidence.level());
+        node.put("confidenceReason", confidence.reason());
+        return confidence;
+    }
+
+    private List<Map<String, String>> readHistory(JsonNode historyNode) {
+        if (historyNode == null || !historyNode.isArray()) {
+            return List.of();
+        }
+        List<Map<String, String>> history = new ArrayList<>();
+        for (JsonNode turn : historyNode) {
+            Map<String, String> entry = new LinkedHashMap<>();
+            entry.put("customerMessage", turn.path("customerMessage").asText(""));
+            entry.put("botResponse", turn.path("botResponse").asText(""));
+            history.add(Map.copyOf(entry));
+        }
+        return List.copyOf(history);
     }
 
     private void attachSourcesFromContext(ObjectNode node, String businessContextJson) throws Exception {

@@ -57,6 +57,8 @@ public class RuntimeSecurityConfig {
                                         .hasAuthority(RuntimeAuthorities.OPERATOR)
                                         .pathMatchers(HttpMethod.POST, "/api/runtime/runs/*/cancel")
                                         .hasAuthority(RuntimeAuthorities.OPERATOR)
+                                        .pathMatchers(HttpMethod.POST, "/api/runtime/runs/*/events")
+                                        .hasAuthority(RuntimeAuthorities.OPERATOR)
                                         .pathMatchers("/api/runtime/**")
                                         .hasAuthority(RuntimeAuthorities.VIEWER)
                                         .anyExchange()

@@ -21,12 +21,17 @@ public record RuntimeEvent(
     }
 
     public static RuntimeEvent of(UUID runId, String type, Map<String, String> attributes, boolean terminal) {
+        return of(runId, type, attributes, terminal, "runtime-core");
+    }
+
+    public static RuntimeEvent of(
+            UUID runId, String type, Map<String, String> attributes, boolean terminal, String source) {
         return new RuntimeEvent(
                 UUID.randomUUID(),
                 runId,
                 type,
                 Instant.now(),
-                "runtime-core",
+                source,
                 attributes,
                 terminal);
     }

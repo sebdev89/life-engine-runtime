@@ -1,5 +1,6 @@
 package io.lifeengine.runtime.ext.businesschat;
 
+import io.lifeengine.runtime.ext.businesschat.prompts.BusinessPromptRegistry;
 import io.lifeengine.runtime.ext.businesschat.stages.BusinessContextAgent;
 import io.lifeengine.runtime.ext.businesschat.stages.BusinessReplyAgent;
 import io.lifeengine.runtime.ext.businesschat.stages.LeadCaptureAgent;
@@ -38,11 +39,14 @@ public class BusinessChatReplyModule implements RuntimeModule {
     public static final String STAGE_BUSINESS_REPLY = "business-reply";
 
     private final boolean leadCaptureEnabled;
+    private final BusinessPromptRegistry businessPromptRegistry;
 
     public BusinessChatReplyModule(
             @Value("${lifeengine.runtime.ext.business-chat.lead-capture.enabled:false}")
-                    boolean leadCaptureEnabled) {
+                    boolean leadCaptureEnabled,
+            BusinessPromptRegistry businessPromptRegistry) {
         this.leadCaptureEnabled = leadCaptureEnabled;
+        this.businessPromptRegistry = businessPromptRegistry;
     }
 
     @Override
@@ -52,9 +56,14 @@ public class BusinessChatReplyModule implements RuntimeModule {
 
     @Override
     public void register(RuntimeRegistry registry) {
-        registry.registerPromptTemplate(BusinessChatReplyPrompts.context());
-        registry.registerPromptTemplate(BusinessChatReplyPrompts.reply());
-        if (leadCaptureEnabled) {
+        for (var template : businessPromptRegistry.activeLlmTemplates()) {
+            registry.registerPromptTemplate(template);
+        }
+        if (leadCaptureEnabled
+                && businessPromptRegistry.activeLlmTemplates().stream()
+                        .noneMatch(
+                                template ->
+                                        BusinessChatReplyPrompts.LEAD_CAPTURE_ID.equals(template.id()))) {
             registry.registerPromptTemplate(BusinessChatReplyPrompts.leadCapture());
         }
 

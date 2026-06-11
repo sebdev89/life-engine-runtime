@@ -41,12 +41,20 @@ public final class BusinessChatReplyIo {
             List<CatalogEntry> catalogItems,
             List<RetrievedChunk> retrievedChunks) {}
 
+    public record HistoryEntry(String customerMessage, String botResponse) {}
+
+    /** Personality and tone hints supplied by business-chat-service (optional). */
+    public record BotProfile(
+            String businessName, String tone, String personality, String greetingStyle, List<String> rules) {}
+
     public record Input(
             String channel,
             String botId,
             String conversationId,
             Customer customer,
             String message,
+            List<HistoryEntry> conversationHistory,
+            BotProfile botProfile,
             BusinessContext businessContext) {}
 
     public static Input readInput(ObjectMapper mapper, String raw) throws JsonProcessingException {
@@ -95,6 +103,8 @@ public final class BusinessChatReplyIo {
             throw new IllegalArgumentException("missing or empty field: customer.externalId");
         }
 
+        List<HistoryEntry> conversationHistory = parseConversationHistory(root.get("conversationHistory"));
+        BotProfile botProfile = parseBotProfile(root.get("botProfile"));
         BusinessContext businessContext = parseBusinessContext(root.get("businessContext"));
 
         return new Input(
@@ -103,7 +113,88 @@ public final class BusinessChatReplyIo {
                 conversationId.trim(),
                 new Customer(customerName.trim(), externalId.trim()),
                 message.trim(),
+                conversationHistory,
+                botProfile,
                 businessContext);
+    }
+
+    private static List<HistoryEntry> parseConversationHistory(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        if (!node.isArray()) {
+            throw new IllegalArgumentException("invalid field: conversationHistory must be an array");
+        }
+        List<HistoryEntry> history = new ArrayList<>();
+        for (JsonNode turn : node) {
+            if (!turn.isObject()) {
+                continue;
+            }
+            String customerMessage = textOrBlank(turn, "customerMessage");
+            String botResponse = textOrBlank(turn, "botResponse");
+            if (!customerMessage.isBlank() && !botResponse.isBlank()) {
+                history.add(new HistoryEntry(customerMessage.trim(), botResponse.trim()));
+            }
+        }
+        return List.copyOf(history);
+    }
+
+    private static BotProfile parseBotProfile(JsonNode node) {
+        if (node == null || node.isNull() || !node.isObject()) {
+            return null;
+        }
+        String businessName = textOrBlank(node, "businessName");
+        String tone = textOrBlank(node, "tone");
+        String personality = textOrBlank(node, "personality");
+        String greetingStyle = textOrBlank(node, "greetingStyle");
+
+        List<String> rules = new ArrayList<>();
+        JsonNode rulesNode = node.get("rules");
+        if (rulesNode != null && rulesNode.isArray()) {
+            for (JsonNode rule : rulesNode) {
+                if (rule.isTextual() && !rule.asText().isBlank()) {
+                    rules.add(rule.asText().trim());
+                }
+            }
+        }
+
+        if (businessName.isBlank()
+                && tone.isBlank()
+                && personality.isBlank()
+                && greetingStyle.isBlank()
+                && rules.isEmpty()) {
+            return null;
+        }
+
+        return new BotProfile(
+                businessName.isBlank() ? null : businessName,
+                tone.isBlank() ? null : tone,
+                personality.isBlank() ? null : personality,
+                greetingStyle.isBlank() ? null : greetingStyle,
+                List.copyOf(rules));
+    }
+
+    public static Map<String, Object> botProfileForLlm(BotProfile botProfile) {
+        if (botProfile == null) {
+            return null;
+        }
+        Map<String, Object> profile = new LinkedHashMap<>();
+        if (botProfile.businessName() != null) {
+            profile.put("businessName", botProfile.businessName());
+        }
+        if (botProfile.tone() != null) {
+            profile.put("tone", botProfile.tone());
+        }
+        if (botProfile.personality() != null) {
+            profile.put("personality", botProfile.personality());
+        }
+        if (botProfile.greetingStyle() != null) {
+            profile.put("greetingStyle", botProfile.greetingStyle());
+        }
+        if (!botProfile.rules().isEmpty()) {
+            profile.put("rules", botProfile.rules());
+        }
+        return profile.isEmpty() ? null : Map.copyOf(profile);
     }
 
     private static BusinessContext parseBusinessContext(JsonNode node) {

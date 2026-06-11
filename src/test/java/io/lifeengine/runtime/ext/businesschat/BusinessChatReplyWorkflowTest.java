@@ -10,6 +10,7 @@ import io.lifeengine.runtime.ext.businesschat.stages.BusinessContextAgent;
 import io.lifeengine.runtime.ext.businesschat.stages.BusinessReplyAgent;
 import java.io.IOException;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -96,8 +97,18 @@ class BusinessChatReplyWorkflowTest {
         Assertions.assertThat(types.stream().filter("AGENT_SUCCEEDED"::equals).count()).isEqualTo(2);
         Assertions.assertThat(types.stream().filter("LLM_CALL_STARTED"::equals).count()).isEqualTo(2);
         Assertions.assertThat(types.stream().filter("LLM_CALL_SUCCEEDED"::equals).count()).isEqualTo(2);
-        Assertions.assertThat(types).contains("BUSINESS_CHAT_STARTED", "BUSINESS_CHAT_RESPONDED");
-        Assertions.assertThat(types).doesNotContain("BUSINESS_CHAT_HANDOFF");
+        Assertions.assertThat(types)
+                .contains(
+                        "CONVERSATION_STARTED",
+                        "KNOWLEDGE_LOOKUP",
+                        "INTENT_DETECTED",
+                        "RESPONSE_GENERATED");
+        Assertions.assertThat(types)
+                .doesNotContain(
+                        "BUSINESS_CHAT_STARTED",
+                        "BUSINESS_CHAT_RESPONDED",
+                        "BUSINESS_CHAT_HANDOFF",
+                        "HANDOFF_DECISION");
 
         List<String> stageIds =
                 events.stream()
@@ -228,6 +239,142 @@ class BusinessChatReplyWorkflowTest {
     }
 
     @Test
+    void businessChatReplyWorkflow_usesInputConversationHistoryWhenProvided() {
+        String conversationId = "conv-input-history-" + UUID.randomUUID();
+
+        enqueueLlm(contextResponseJson());
+        enqueueLlm(replyResponseJson());
+
+        UUID runId =
+                startBusinessChatRunWithExtras(
+                        "barberia-demo",
+                        "¿Y el combo?",
+                        conversationId,
+                        Map.of(
+                                "conversationHistory",
+                                List.of(
+                                        Map.of(
+                                                "customerMessage", "Hola",
+                                                "botResponse", "Hola, ¿en qué te ayudo?"),
+                                        Map.of(
+                                                "customerMessage", "¿Cuánto sale un corte?",
+                                                "botResponse", "El corte sale $8000."))));
+        awaitTerminal(runId, RunStatus.SUCCEEDED);
+
+        com.fasterxml.jackson.databind.JsonNode contextStage = contextStageOutput(runId);
+        Assertions.assertThat(contextStage.get("conversationHistory")).hasSize(2);
+        Assertions.assertThat(contextStage.get("conversationHistory").get(1).get("customerMessage").asText())
+                .isEqualTo("¿Cuánto sale un corte?");
+        Assertions.assertThat(conversationContext.history(conversationId)).hasSize(1);
+    }
+
+    @Test
+    void businessChatReplyWorkflow_includesBotProfileInContextStage() {
+        enqueueLlm(contextResponseJson());
+        enqueueLlm(replyResponseJson());
+
+        UUID runId =
+                startBusinessChatRunWithExtras(
+                        "barberia-demo",
+                        "Hola",
+                        "conv-bot-profile-" + UUID.randomUUID(),
+                        Map.of(
+                                "botProfile",
+                                Map.of(
+                                        "tone", "cercano y directo",
+                                        "personality", "barbero profesional")));
+        awaitTerminal(runId, RunStatus.SUCCEEDED);
+
+        com.fasterxml.jackson.databind.JsonNode contextStage = contextStageOutput(runId);
+        Assertions.assertThat(contextStage.get("botProfile").get("tone").asText())
+                .isEqualTo("cercano y directo");
+        Assertions.assertThat(contextStage.get("botProfile").get("personality").asText())
+                .isEqualTo("barbero profesional");
+    }
+
+    @Test
+    void businessChatReplyWorkflow_pricingReplyPreservesOutputContract() {
+        enqueueLlm(contextResponseJson());
+        enqueueLlm(
+                """
+                {
+                  "response": "La consulta inicial cuesta $15000.",
+                  "intent": "pricing",
+                  "confidence": "HIGH",
+                  "handoffRequired": false,
+                  "leadCaptured": false,
+                  "channel": "WEB_CHAT",
+                  "sources": []
+                }
+                """);
+
+        UUID runId =
+                startBusinessChatRunWithExtras(
+                        "consultorio-demo",
+                        "¿Cuánto cuesta una consulta inicial?",
+                        "conv-pricing-" + UUID.randomUUID(),
+                        Map.of(
+                                "conversationHistory",
+                                List.of(
+                                        Map.of(
+                                                "customerMessage", "Hola",
+                                                "botResponse", "Hola, ¿en qué te ayudo?"))));
+        awaitTerminal(runId, RunStatus.SUCCEEDED);
+
+        com.fasterxml.jackson.databind.JsonNode replyStage =
+                stageOutput(runId, BusinessChatReplyModule.STAGE_BUSINESS_REPLY);
+        Assertions.assertThat(replyStage.get("response").asText()).contains("15000");
+        Assertions.assertThat(replyStage.get("intent").asText()).isEqualTo("pricing");
+        Assertions.assertThat(replyStage.get("confidence").asText()).isEqualTo("HIGH");
+        Assertions.assertThat(replyStage.get("handoffRequired").asBoolean()).isFalse();
+        Assertions.assertThat(replyStage.get("leadCaptured").asBoolean()).isFalse();
+        Assertions.assertThat(replyStage.get("channel").asText()).isEqualTo("WEB_CHAT");
+        Assertions.assertThat(replyStage.has("sources")).isTrue();
+        Assertions.assertThat(replyStage.get("reply").asText()).contains("15000");
+        Assertions.assertThat(replyStage.get("contractVersion").asText()).isEqualTo("v1");
+        Assertions.assertThat(replyStage.get("handoff").get("required").asBoolean()).isFalse();
+        Assertions.assertThat(replyStage.get("leadScore").asText()).isEqualTo("COLD");
+    }
+
+    @Test
+    void businessChatReplyWorkflow_humanHandoffSetsHandoffRequired() {
+        enqueueLlm(
+                """
+                {
+                  "intent": "human_handoff",
+                  "confidence": "HIGH",
+                  "handoffRequired": false,
+                  "leadCaptured": false,
+                  "contextNotes": "Customer wants a doctor."
+                }
+                """);
+        enqueueLlm(
+                """
+                {
+                  "response": "Te paso con un médico. ¿Me dejás tu nombre y un teléfono?",
+                  "intent": "human_handoff",
+                  "confidence": "HIGH",
+                  "handoffRequired": true,
+                  "leadCaptured": false,
+                  "channel": "WEB_CHAT"
+                }
+                """);
+
+        UUID runId =
+                startBusinessChatRun(
+                        "consultorio-demo",
+                        "Necesito hablar con un médico",
+                        "conv-lawyer-" + UUID.randomUUID());
+        awaitTerminal(runId, RunStatus.SUCCEEDED);
+
+        com.fasterxml.jackson.databind.JsonNode replyStage =
+                stageOutput(runId, BusinessChatReplyModule.STAGE_BUSINESS_REPLY);
+        Assertions.assertThat(replyStage.get("handoffRequired").asBoolean()).isTrue();
+        Assertions.assertThat(replyStage.get("intent").asText()).isEqualTo("human_handoff");
+        Assertions.assertThat(replyStage.get("response").asText()).containsIgnoringCase("médico");
+    }
+
+    @Test
     void businessChatReplyWorkflow_triggersHandoffForFrustration() {
         enqueueLlm(
                 """
@@ -269,7 +416,21 @@ class BusinessChatReplyWorkflowTest {
 
         List<String> eventTypes =
                 collectEvents(runId).stream().map(RuntimeEventResponse::type).toList();
-        Assertions.assertThat(eventTypes).contains("BUSINESS_CHAT_STARTED", "BUSINESS_CHAT_HANDOFF", "BUSINESS_CHAT_RESPONDED");
+        Assertions.assertThat(eventTypes)
+                .contains(
+                        "CONVERSATION_STARTED",
+                        "KNOWLEDGE_LOOKUP",
+                        "INTENT_DETECTED",
+                        "RESPONSE_GENERATED");
+        Assertions.assertThat(eventTypes).doesNotContain("BUSINESS_CHAT_HANDOFF", "HANDOFF_DECISION");
+
+        RuntimeEventResponse intentEvent =
+                collectEvents(runId).stream()
+                        .filter(e -> "INTENT_DETECTED".equals(e.type()))
+                        .findFirst()
+                        .orElseThrow();
+        Assertions.assertThat(intentEvent.payload().get("handoffRequiredPreview")).isEqualTo("true");
+        Assertions.assertThat(intentEvent.payload().get("handoffReasonPreview")).isEqualTo("FRUSTRATION");
     }
 
     private com.fasterxml.jackson.databind.JsonNode stageOutput(UUID runId, String stageId) {
@@ -309,29 +470,45 @@ class BusinessChatReplyWorkflowTest {
     }
 
     private UUID startBusinessChatRun(String botId, String message, String conversationId) {
-        String escapedMessage = message.replace("\\", "\\\\").replace("\"", "\\\"");
-        String escapedConversationId =
-                conversationId.replace("\\", "\\\\").replace("\"", "\\\"");
-        return webTestClient
-                .post()
-                .uri("/api/runtime/runs")
-                .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(
-                        """
-                        {
-                          "workflowId":"business-chat.reply.v1",
-                          "input":"{\\"channel\\":\\"WEB_CHAT\\",\\"botId\\":\\"%s\\",\\"conversationId\\":\\"%s\\",\\"customer\\":{\\"name\\":\\"Cliente Demo\\",\\"externalId\\":\\"web-demo-1\\"},\\"message\\":\\"%s\\"}",
-                          "correlationId":"business-chat-test"
-                        }
-                        """
-                                .formatted(botId, escapedConversationId, escapedMessage))
-                .exchange()
-                .expectStatus()
-                .isCreated()
-                .expectBody(RunResponse.class)
-                .returnResult()
-                .getResponseBody()
-                .runId();
+        return startBusinessChatRunWithExtras(botId, message, conversationId, Map.of());
+    }
+
+    private UUID startBusinessChatRunWithExtras(
+            String botId, String message, String conversationId, Map<String, Object> extraFields) {
+        try {
+            Map<String, Object> input = new LinkedHashMap<>();
+            input.put("channel", "WEB_CHAT");
+            input.put("botId", botId);
+            input.put("conversationId", conversationId);
+            input.put("customer", Map.of("name", "Cliente Demo", "externalId", "web-demo-1"));
+            input.put("message", message);
+            input.putAll(extraFields);
+
+            String escapedInput =
+                    JSON.writeValueAsString(input).replace("\\", "\\\\").replace("\"", "\\\"");
+            return webTestClient
+                    .post()
+                    .uri("/api/runtime/runs")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(
+                            """
+                            {
+                              "workflowId":"business-chat.reply.v1",
+                              "input":"%s",
+                              "correlationId":"business-chat-test"
+                            }
+                            """
+                                    .formatted(escapedInput))
+                    .exchange()
+                    .expectStatus()
+                    .isCreated()
+                    .expectBody(RunResponse.class)
+                    .returnResult()
+                    .getResponseBody()
+                    .runId();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private void awaitTerminal(UUID runId, RunStatus expected) {
