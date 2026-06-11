@@ -396,6 +396,61 @@ public final class StrictAgentJson {
             String severity, String summary, java.util.List<String> recommendations) {}
 
     // ----------------------------------------------------------------------------------------
+    // Dev knowledge-answer agents.
+    // ----------------------------------------------------------------------------------------
+
+    private static final Set<String> CONFIDENCE_LEVELS = Set.of("HIGH", "MEDIUM", "LOW");
+
+    public static DevKnowledgeAnswerOutput parseDevKnowledgeAnswer(String raw) {
+        JsonNode node = requireObject(raw);
+        String confidence = requireText(node, "confidence").toUpperCase(Locale.ROOT);
+        if (!CONFIDENCE_LEVELS.contains(confidence)) {
+            throw new IllegalArgumentException(
+                    "confidence must be one of high, medium, low (got: "
+                            + node.path("confidence").asText()
+                            + ")");
+        }
+        return new DevKnowledgeAnswerOutput(
+                requireText(node, "answer"),
+                confidence.toLowerCase(Locale.ROOT),
+                optionalDevKnowledgeSources(node));
+    }
+
+    private static List<DevKnowledgeSourceOutput> optionalDevKnowledgeSources(JsonNode node) {
+        JsonNode sourcesNode = node.get("sources");
+        if (sourcesNode == null || sourcesNode.isNull() || !sourcesNode.isArray()) {
+            return List.of();
+        }
+        List<DevKnowledgeSourceOutput> sources = new ArrayList<>();
+        for (JsonNode item : sourcesNode) {
+            if (item == null || !item.isObject()) {
+                continue;
+            }
+            String title = optionalText(item, "title");
+            String chunkId = optionalText(item, "chunkId");
+            JsonNode scoreNode = item.get("score");
+            if (title == null || chunkId == null) {
+                continue;
+            }
+            String documentId = optionalText(item, "documentId");
+            double score = scoreNode != null && scoreNode.isNumber() ? scoreNode.asDouble() : 0.0;
+            sources.add(new DevKnowledgeSourceOutput(title, chunkId, documentId, score));
+        }
+        return List.copyOf(sources);
+    }
+
+    public record DevKnowledgeAnswerOutput(
+            String answer, String confidence, List<DevKnowledgeSourceOutput> sources) {
+
+        public DevKnowledgeAnswerOutput {
+            sources = sources == null ? List.of() : List.copyOf(sources);
+        }
+    }
+
+    public record DevKnowledgeSourceOutput(
+            String title, String chunkId, String documentId, double score) {}
+
+    // ----------------------------------------------------------------------------------------
     // Business chat agents (Business Agent Platform MVP).
     // ----------------------------------------------------------------------------------------
 
