@@ -498,6 +498,16 @@ than 32 UTF-8 bytes (`IllegalStateException` at bean construction). This catches
   GitHub-hosted runners Docker is present, so this is not an effective gap; document if
   using a runner without Docker.
 
+## Phase 1 — Business Chat RAG (GREEN)
+
+**Tag:** `phase-1-rag-green`
+
+Workflow `business-chat.reply.v1` consume `businessContext.retrievedChunks` (inyectados por Business Chat Service, **no** por este runtime). Devuelve `sources` opcionales en el output del stage `business-reply`.
+
+Runtime **no** llama a RAG. Smokes: `../../scripts/smoke-ai-stack.sh` · Guía: [`../../scripts/PHASE-1-RAG.md`](../../scripts/PHASE-1-RAG.md)
+
+---
+
 ## Roadmap
 
 - [ ] Extract `ext.cryptomarketreview` into a standalone `life-engine-cryptobot-runtime-module` jar.

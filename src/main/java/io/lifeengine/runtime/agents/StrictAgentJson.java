@@ -356,4 +356,201 @@ public final class StrictAgentJson {
             boolean approved, java.util.List<String> warnings, String riskLevel) {}
 
     public record CryptoFinalSummaryOutput(String response) {}
+
+    // ----------------------------------------------------------------------------------------
+    // Dev code-review agents (minimal second vertical).
+    // ----------------------------------------------------------------------------------------
+
+    public static DevCodeReviewOutput parseDevCodeReview(String raw) {
+        JsonNode node = requireObject(raw);
+        String severityHint = requireText(node, "severityHint").toUpperCase(Locale.ROOT);
+        if (!RISK_LEVELS.contains(severityHint)) {
+            throw new IllegalArgumentException(
+                    "severityHint must be one of LOW, MEDIUM, HIGH (got: " + severityHint + ")");
+        }
+        java.util.List<String> findings = stringArray(node, "findings");
+        if (findings.isEmpty()) {
+            throw new IllegalArgumentException("findings must be a non-empty array");
+        }
+        return new DevCodeReviewOutput(findings, severityHint, requireText(node, "notes"));
+    }
+
+    public static DevSummaryOutput parseDevSummary(String raw) {
+        JsonNode node = requireObject(raw);
+        String severity = requireText(node, "severity").toUpperCase(Locale.ROOT);
+        if (!RISK_LEVELS.contains(severity)) {
+            throw new IllegalArgumentException(
+                    "severity must be one of LOW, MEDIUM, HIGH (got: " + severity + ")");
+        }
+        java.util.List<String> recommendations = stringArray(node, "recommendations");
+        if (recommendations.isEmpty()) {
+            throw new IllegalArgumentException("recommendations must be a non-empty array");
+        }
+        return new DevSummaryOutput(severity, requireText(node, "summary"), recommendations);
+    }
+
+    public record DevCodeReviewOutput(
+            java.util.List<String> findings, String severityHint, String notes) {}
+
+    public record DevSummaryOutput(
+            String severity, String summary, java.util.List<String> recommendations) {}
+
+    // ----------------------------------------------------------------------------------------
+    // Business chat agents (Business Agent Platform MVP).
+    // ----------------------------------------------------------------------------------------
+
+    private static final Set<String> BUSINESS_INTENTS =
+            Set.of(
+                    "GREETING",
+                    "PRICING",
+                    "BOOKING",
+                    "LOCATION",
+                    "SCHEDULE",
+                    "SUPPORT",
+                    "COMPLAINT",
+                    "HUMAN_HANDOFF");
+
+    public static BusinessContextOutput parseBusinessContext(String raw) {
+        JsonNode node = requireObject(raw);
+        String intent = normalizeBusinessIntent(requireText(node, "intent"));
+        String confidence = requireText(node, "confidence").toUpperCase(Locale.ROOT);
+        if (!RISK_LEVELS.contains(confidence)) {
+            throw new IllegalArgumentException(
+                    "confidence must be one of LOW, MEDIUM, HIGH (got: " + confidence + ")");
+        }
+        return new BusinessContextOutput(
+                intent,
+                confidence,
+                requireBoolean(node, "handoffRequired"),
+                requireBoolean(node, "leadCaptured"),
+                requireText(node, "contextNotes"));
+    }
+
+    public static BusinessReplyOutput parseBusinessReply(String raw) {
+        JsonNode node = requireObject(raw);
+        String intent = normalizeBusinessIntent(requireText(node, "intent"));
+        String confidence = requireText(node, "confidence").toUpperCase(Locale.ROOT);
+        if (!RISK_LEVELS.contains(confidence)) {
+            throw new IllegalArgumentException(
+                    "confidence must be one of LOW, MEDIUM, HIGH (got: " + confidence + ")");
+        }
+        return new BusinessReplyOutput(
+                requireText(node, "response"),
+                intent,
+                confidence,
+                requireBoolean(node, "handoffRequired"),
+                requireBoolean(node, "leadCaptured"),
+                requireText(node, "channel"),
+                optionalReplySources(node));
+    }
+
+    private static List<ReplySourceOutput> optionalReplySources(JsonNode node) {
+        JsonNode sourcesNode = node.get("sources");
+        if (sourcesNode == null || sourcesNode.isNull() || !sourcesNode.isArray()) {
+            return List.of();
+        }
+        List<ReplySourceOutput> sources = new ArrayList<>();
+        for (JsonNode item : sourcesNode) {
+            if (item == null || !item.isObject()) {
+                continue;
+            }
+            String title = optionalText(item, "title");
+            String chunkId = optionalText(item, "chunkId");
+            JsonNode scoreNode = item.get("score");
+            if (title == null || chunkId == null || scoreNode == null || !scoreNode.isNumber()) {
+                continue;
+            }
+            sources.add(new ReplySourceOutput(title, chunkId, scoreNode.asDouble()));
+        }
+        return List.copyOf(sources);
+    }
+
+    public static LeadCaptureOutput parseLeadCapture(String raw) {
+        JsonNode node = requireObject(raw);
+        JsonNode leadDataNode = node.get("leadData");
+        if (leadDataNode == null || !leadDataNode.isObject()) {
+            throw new IllegalArgumentException("missing or invalid field: leadData");
+        }
+        LeadData leadData =
+                new LeadData(
+                        optionalText(leadDataNode, "nombre"),
+                        optionalText(leadDataNode, "telefono"),
+                        optionalText(leadDataNode, "email"));
+        boolean leadCaptured = requireBoolean(node, "leadCaptured");
+        if (leadCaptured && leadData.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "leadCaptured=true requires at least one non-empty leadData field");
+        }
+        if (!leadCaptured && !leadData.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "leadCaptured=false requires all leadData fields to be null or empty");
+        }
+        return new LeadCaptureOutput(leadCaptured, leadData);
+    }
+
+    private static String optionalText(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (!value.isTextual()) {
+            throw new IllegalArgumentException("field '" + field + "' must be a string or null");
+        }
+        String text = value.asText().trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    private static String normalizeBusinessIntent(String rawIntent) {
+        String intent =
+                rawIntent.trim().toUpperCase(Locale.ROOT).replace('-', '_').replace(' ', '_');
+        if (!BUSINESS_INTENTS.contains(intent)) {
+            throw new IllegalArgumentException(
+                    "intent must be one of greeting, pricing, booking, location, schedule, support,"
+                            + " complaint, human_handoff (got: "
+                            + rawIntent
+                            + ")");
+        }
+        return intent.toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean requireBoolean(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        if (value == null || !value.isBoolean()) {
+            throw new IllegalArgumentException("missing or non-boolean field: " + field);
+        }
+        return value.asBoolean();
+    }
+
+    public record BusinessContextOutput(
+            String intent,
+            String confidence,
+            boolean handoffRequired,
+            boolean leadCaptured,
+            String contextNotes) {}
+
+    public record BusinessReplyOutput(
+            String response,
+            String intent,
+            String confidence,
+            boolean handoffRequired,
+            boolean leadCaptured,
+            String channel,
+            List<ReplySourceOutput> sources) {
+
+        public BusinessReplyOutput {
+            sources = sources == null ? List.of() : List.copyOf(sources);
+        }
+    }
+
+    public record ReplySourceOutput(String title, String chunkId, double score) {}
+
+    public record LeadData(String nombre, String telefono, String email) {
+        boolean isEmpty() {
+            return (nombre == null || nombre.isBlank())
+                    && (telefono == null || telefono.isBlank())
+                    && (email == null || email.isBlank());
+        }
+    }
+
+    public record LeadCaptureOutput(boolean leadCaptured, LeadData leadData) {}
 }

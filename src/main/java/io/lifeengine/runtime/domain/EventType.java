@@ -24,6 +24,10 @@ public enum EventType {
     LLM_CALL_SUCCEEDED,
     LLM_CALL_FAILED,
 
+    BUSINESS_CHAT_STARTED,
+    BUSINESS_CHAT_RESPONDED,
+    BUSINESS_CHAT_HANDOFF,
+
     WARNING_RECORDED;
 
     public String wireName() {
