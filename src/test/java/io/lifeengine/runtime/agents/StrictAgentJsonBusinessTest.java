@@ -1,7 +1,6 @@
 package io.lifeengine.runtime.agents;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.lifeengine.runtime.ext.businesschat.BusinessChatIntents;
 import org.junit.jupiter.api.Test;
@@ -57,22 +56,73 @@ class StrictAgentJsonBusinessTest {
         assertThat(out.handoffRequired()).isTrue();
     }
 
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                "consultation",
+                "inquiry",
+                "business_info",
+                "appointment_request",
+                "random_intent_value"
+            })
+    void parseBusinessContext_fallsBackToUnclearForOutOfEnumIntent(String rawIntent) {
+        String raw =
+                """
+                {
+                  "intent": "%s",
+                  "confidence": "HIGH",
+                  "handoffRequired": false,
+                  "leadCaptured": false,
+                  "contextNotes": "Customer asked about the first consultation."
+                }
+                """
+                        .formatted(rawIntent);
+
+        var out = StrictAgentJson.parseBusinessContext(raw);
+
+        assertThat(out.intent()).isEqualTo("unclear");
+        assertThat(out.confidence()).isEqualTo("LOW");
+        assertThat(out.handoffRequired()).isFalse();
+        assertThat(out.leadCaptured()).isFalse();
+        assertThat(out.contextNotes()).isNotBlank();
+    }
+
     @Test
-    void parseBusinessContext_rejectsLegacyBusinessInfoIntent() {
-        assertThatThrownBy(
-                        () ->
-                                StrictAgentJson.parseBusinessContext(
-                                        """
-                                        {
-                                          "intent": "business_info",
-                                          "confidence": "HIGH",
-                                          "handoffRequired": false,
-                                          "leadCaptured": false,
-                                          "contextNotes": "note"
-                                        }
-                                        """))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("intent must be one of");
+    void parseBusinessContext_keepsLlmConfidenceForKnownIntents() {
+        var out =
+                StrictAgentJson.parseBusinessContext(
+                        """
+                        {
+                          "intent": "pricing",
+                          "confidence": "HIGH",
+                          "handoffRequired": false,
+                          "leadCaptured": false,
+                          "contextNotes": "note"
+                        }
+                        """);
+
+        assertThat(out.intent()).isEqualTo("pricing");
+        assertThat(out.confidence()).isEqualTo("HIGH");
+    }
+
+    @Test
+    void parseBusinessReply_fallsBackToUnclearForOutOfEnumIntent() {
+        var out =
+                StrictAgentJson.parseBusinessReply(
+                        """
+                        {
+                          "response": "¿Podrías contarme un poco más sobre lo que necesitás?",
+                          "intent": "consultation",
+                          "confidence": "HIGH",
+                          "handoffRequired": false,
+                          "leadCaptured": false,
+                          "channel": "WEB_CHAT"
+                        }
+                        """);
+
+        assertThat(out.intent()).isEqualTo("unclear");
+        assertThat(out.confidence()).isEqualTo("LOW");
+        assertThat(out.response()).isNotBlank();
     }
 
     @Test

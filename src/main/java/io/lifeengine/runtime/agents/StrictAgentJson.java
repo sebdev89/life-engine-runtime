@@ -470,16 +470,29 @@ public final class StrictAgentJson {
                     "EMERGENCY",
                     "LEGAL_SENSITIVE");
 
+    /**
+     * Safe fallback for LLM outputs that hallucinate an intent outside {@link #BUSINESS_INTENTS}
+     * (e.g. {@code consultation}, {@code inquiry}). The workflow keeps running with this intent
+     * plus a forced {@code LOW} confidence so downstream guardrails ({@code unclear} branch of
+     * {@code GUARDRAIL_POLICY}) prompt the customer to reformulate instead of aborting the run.
+     */
+    private static final String FALLBACK_BUSINESS_INTENT = "unclear";
+
+    private static final String FALLBACK_BUSINESS_CONFIDENCE = "LOW";
+
     public static BusinessContextOutput parseBusinessContext(String raw) {
         JsonNode node = requireObject(raw);
-        String intent = normalizeBusinessIntent(requireText(node, "intent"));
+        BusinessIntentResolution intent = resolveBusinessIntent(requireText(node, "intent"));
         String confidence = requireText(node, "confidence").toUpperCase(Locale.ROOT);
         if (!RISK_LEVELS.contains(confidence)) {
             throw new IllegalArgumentException(
                     "confidence must be one of LOW, MEDIUM, HIGH (got: " + confidence + ")");
         }
+        if (intent.fallback()) {
+            confidence = FALLBACK_BUSINESS_CONFIDENCE;
+        }
         return new BusinessContextOutput(
-                intent,
+                intent.intent(),
                 confidence,
                 requireBoolean(node, "handoffRequired"),
                 requireBoolean(node, "leadCaptured"),
@@ -488,15 +501,18 @@ public final class StrictAgentJson {
 
     public static BusinessReplyOutput parseBusinessReply(String raw) {
         JsonNode node = requireObject(raw);
-        String intent = normalizeBusinessIntent(requireText(node, "intent"));
+        BusinessIntentResolution intent = resolveBusinessIntent(requireText(node, "intent"));
         String confidence = requireText(node, "confidence").toUpperCase(Locale.ROOT);
         if (!RISK_LEVELS.contains(confidence)) {
             throw new IllegalArgumentException(
                     "confidence must be one of LOW, MEDIUM, HIGH (got: " + confidence + ")");
         }
+        if (intent.fallback()) {
+            confidence = FALLBACK_BUSINESS_CONFIDENCE;
+        }
         return new BusinessReplyOutput(
                 requireText(node, "response"),
-                intent,
+                intent.intent(),
                 confidence,
                 requireBoolean(node, "handoffRequired"),
                 requireBoolean(node, "leadCaptured"),
@@ -560,19 +576,27 @@ public final class StrictAgentJson {
         return text.isEmpty() ? null : text;
     }
 
-    private static String normalizeBusinessIntent(String rawIntent) {
+    /**
+     * Resolves an LLM-supplied intent to the canonical {@link #BUSINESS_INTENTS} enum.
+     *
+     * <p>Out-of-enum values (e.g. {@code consultation} from an instruct-model hallucination)
+     * do <strong>not</strong> abort the workflow — they collapse to
+     * {@link #FALLBACK_BUSINESS_INTENT} with the {@link BusinessIntentResolution#fallback()}
+     * flag set, which callers use to force {@code confidence} to {@link #FALLBACK_BUSINESS_CONFIDENCE}.
+     */
+    static BusinessIntentResolution resolveBusinessIntent(String rawIntent) {
+        if (rawIntent == null) {
+            return new BusinessIntentResolution(FALLBACK_BUSINESS_INTENT, true);
+        }
         String intent =
                 rawIntent.trim().toUpperCase(Locale.ROOT).replace('-', '_').replace(' ', '_');
-        if (!BUSINESS_INTENTS.contains(intent)) {
-            throw new IllegalArgumentException(
-                    "intent must be one of greeting, pricing, booking, location, schedule, support,"
-                            + " complaint, human_handoff, out_of_domain, unclear, abusive, emergency,"
-                            + " legal_sensitive (got: "
-                            + rawIntent
-                            + ")");
+        if (intent.isEmpty() || !BUSINESS_INTENTS.contains(intent)) {
+            return new BusinessIntentResolution(FALLBACK_BUSINESS_INTENT, true);
         }
-        return intent.toLowerCase(Locale.ROOT);
+        return new BusinessIntentResolution(intent.toLowerCase(Locale.ROOT), false);
     }
+
+    record BusinessIntentResolution(String intent, boolean fallback) {}
 
     private static boolean requireBoolean(JsonNode node, String field) {
         JsonNode value = node.get(field);
