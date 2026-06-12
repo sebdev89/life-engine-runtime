@@ -89,10 +89,7 @@ public class BusinessReplyAgent implements AgentExecutor {
 
         String userInput;
         try {
-            var combined = mapper.createObjectNode();
-            combined.set("source", mapper.readTree(ctx.input()));
-            combined.set("businessContext", mapper.readTree(businessContext));
-            userInput = mapper.writeValueAsString(combined);
+            userInput = buildReplyUserInput(mapper, ctx.input(), businessContext);
         } catch (Exception e) {
             return agentFailed(ctx, e);
         }
@@ -172,6 +169,77 @@ public class BusinessReplyAgent implements AgentExecutor {
                             }
                             return agentFailed(ctx, error);
                         });
+    }
+
+    /**
+     * Build the user-message JSON shipped to the reply LLM.
+     *
+     * <p>The {@code source} sub-object is intentionally pruned to a minimal subset to
+     * avoid duplicating data that the prior context stage already re-emitted into
+     * {@code businessContext}. Measured against the local 4096-token vLLM ceiling on
+     * Qwen2.5-Coder-3B with a stock BogaBot bot, the unpruned payload was ~4032 tokens
+     * (3905 prompt + 192 output = 4097 = HTTP 400 from vLLM); ~1700 of those tokens were
+     * spent on {@code source.businessContext}, {@code source.botProfile},
+     * {@code source.conversationHistory} and other fields that {@link BusinessContextAgent}
+     * already re-emits into its canonical output and that the reply system prompt only
+     * ever references via the {@code businessContext.*} path. Pruning brings the steady-
+     * state reply prompt down to ~2650 tokens (~1400 token headroom) and removes the
+     * llm_failure_fallback we kept hitting on the second turn of every legal-domain
+     * conversation.
+     *
+     * <p>Fields kept (referenced by {@code BusinessChatReplyPrompts.REPLY_SYSTEM_PROMPT}
+     * Hard rules on the {@code source.*} path):
+     *
+     * <ul>
+     *   <li>{@code source.channel} — Hard rule: "channel must echo source.channel exactly".
+     *   <li>{@code source.message} — Hard rule: "Use businessContext.conversationHistory
+     *       plus source.message for contextual replies".
+     *   <li>{@code source.customer} — used when the prompt cites the customer name.
+     * </ul>
+     *
+     * <p>Fields dropped (all available via {@code businessContext.*}, see
+     * {@link BusinessContextAgent}'s canonical output):
+     *
+     * <ul>
+     *   <li>{@code source.businessContext} — duplicated by everything inside
+     *       {@code businessContext.knowledgeBase} / {@code businessContext.botProfile}.
+     *   <li>{@code source.botProfile} — duplicated as {@code businessContext.botProfile}.
+     *   <li>{@code source.conversationHistory} — duplicated as
+     *       {@code businessContext.conversationHistory}.
+     *   <li>{@code source.botId} / {@code source.conversationId} / {@code source.tenantId}
+     *       / {@code source.now} / {@code source.locale} / {@code source.conversation} /
+     *       {@code source.channelContext} / {@code source.replyMaxTokens} — not referenced
+     *       by the reply system prompt.
+     * </ul>
+     *
+     * <p>Post-LLM stages ({@link #finalizeReply}, {@code BusinessChatReplyContractV1},
+     * {@code attachSourcesFromContext}) keep receiving the untrimmed {@code ctx.input()}
+     * directly, so contract enrichment, deterministic confidence and source-attribution
+     * are unaffected.
+     */
+    static String buildReplyUserInput(
+            ObjectMapper mapper, String sourceJson, String businessContextJson) throws Exception {
+        JsonNode sourceNode =
+                mapper.readTree(sourceJson == null || sourceJson.isBlank() ? "{}" : sourceJson);
+        ObjectNode sourceMin = mapper.createObjectNode();
+        if (sourceNode.hasNonNull("channel")) {
+            sourceMin.set("channel", sourceNode.get("channel"));
+        }
+        if (sourceNode.hasNonNull("message")) {
+            sourceMin.set("message", sourceNode.get("message"));
+        }
+        if (sourceNode.hasNonNull("customer")) {
+            sourceMin.set("customer", sourceNode.get("customer"));
+        }
+        ObjectNode combined = mapper.createObjectNode();
+        combined.set("source", sourceMin);
+        combined.set(
+                "businessContext",
+                mapper.readTree(
+                        businessContextJson == null || businessContextJson.isBlank()
+                                ? "{}"
+                                : businessContextJson));
+        return mapper.writeValueAsString(combined);
     }
 
     private String finalizeReply(
