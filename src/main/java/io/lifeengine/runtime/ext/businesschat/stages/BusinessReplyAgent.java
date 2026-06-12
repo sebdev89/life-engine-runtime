@@ -260,6 +260,18 @@ public class BusinessReplyAgent implements AgentExecutor {
         }
     }
 
+    /**
+     * H2 — Disabled in-memory conversation memory.
+     *
+     * <p>This call is now a trampoline into the no-op
+     * {@link BusinessConversationContext#append(String, String, String)}. The
+     * authoritative transcript lives in business-chat-service
+     * ({@code MessageR2dbcStore}) and is shipped on every Runtime invocation
+     * via {@code conversationHistory}, so the Runtime no longer needs a
+     * process-local copy and the previous version's split-memory hazard is
+     * eliminated. We keep the call site (rather than removing it) so that a
+     * future durable memory bus can be wired in without touching the agent.
+     */
     private void rememberInteraction(WorkflowRunContext ctx, String botResponse) {
         try {
             var source = mapper.readTree(ctx.input());

@@ -210,7 +210,14 @@ class BusinessChatReplyWorkflowTest {
     }
 
     @Test
-    void businessChatReplyWorkflow_usesConversationHistoryOnFollowUp() {
+    void businessChatReplyWorkflow_doesNotPersistAcrossRunsWhenHistoryOmitted_h2NoOp() {
+        // H2 — the in-memory BusinessConversationContext is disabled.
+        // When the caller does NOT pass conversationHistory in the input,
+        // the Runtime is fully stateless: a follow-up run starts with no
+        // prior turns even if a previous run used the same conversationId.
+        // business-chat-service is responsible for sending the transcript
+        // on every call; this test pins the no-op behavior so the split
+        // memory hazard cannot be silently reintroduced.
         String conversationId = "conv-memory-" + UUID.randomUUID();
 
         enqueueLlm(contextResponseJson());
@@ -229,13 +236,9 @@ class BusinessChatReplyWorkflowTest {
         com.fasterxml.jackson.databind.JsonNode contextStage =
                 contextStageOutput(secondRunId);
         Assertions.assertThat(contextStage.get("conversationHistory")).isNotNull();
-        Assertions.assertThat(contextStage.get("conversationHistory")).hasSize(1);
-        Assertions.assertThat(contextStage.get("conversationHistory").get(0).get("customerMessage").asText())
-                .isEqualTo("¿Cuánto sale un corte?");
-        Assertions.assertThat(contextStage.get("conversationHistory").get(0).get("botResponse").asText())
-                .contains("12000");
+        Assertions.assertThat(contextStage.get("conversationHistory")).isEmpty();
 
-        Assertions.assertThat(conversationContext.history(conversationId)).hasSize(2);
+        Assertions.assertThat(conversationContext.history(conversationId)).isEmpty();
     }
 
     @Test
@@ -265,7 +268,10 @@ class BusinessChatReplyWorkflowTest {
         Assertions.assertThat(contextStage.get("conversationHistory")).hasSize(2);
         Assertions.assertThat(contextStage.get("conversationHistory").get(1).get("customerMessage").asText())
                 .isEqualTo("¿Cuánto sale un corte?");
-        Assertions.assertThat(conversationContext.history(conversationId)).hasSize(1);
+        // H2 — even after a successful run, the in-memory store stays empty.
+        // business-chat-service owns the transcript via Postgres; the
+        // Runtime no longer keeps a process-local copy.
+        Assertions.assertThat(conversationContext.history(conversationId)).isEmpty();
     }
 
     @Test

@@ -4,6 +4,13 @@ import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+/**
+ * The in-memory conversation store was disabled as part of {@code H2} in
+ * {@code StabilizationAudit.md}. business-chat-service / Postgres is the
+ * authoritative transcript; Runtime is fully stateless. These tests pin
+ * the no-op semantics so future work cannot silently reintroduce the
+ * split-memory hazard.
+ */
 class BusinessConversationContextTest {
 
     private BusinessConversationContext context;
@@ -19,43 +26,40 @@ class BusinessConversationContextTest {
     }
 
     @Test
-    void append_andHistory_roundTrip() {
+    void history_isEmptyForNullOrBlankConversationId() {
+        Assertions.assertThat(context.history(null)).isEmpty();
+        Assertions.assertThat(context.history("")).isEmpty();
+        Assertions.assertThat(context.history("   ")).isEmpty();
+    }
+
+    @Test
+    void append_doesNotPopulateHistory_h2NoOp() {
+        // H2 — appends must be silently ignored; the Postgres transcript on
+        // business-chat-service is the only source of truth.
         context.append("conv-1", "Hola", "Hola, ¿en qué te ayudo?");
 
-        Assertions.assertThat(context.history("conv-1"))
-                .containsExactly(new BusinessConversationContext.Interaction("Hola", "Hola, ¿en qué te ayudo?"));
+        Assertions.assertThat(context.history("conv-1")).isEmpty();
     }
 
     @Test
-    void append_keepsOnlyLastTenInteractions() {
-        for (int i = 1; i <= 12; i++) {
-            context.append("conv-1", "msg-" + i, "reply-" + i);
+    void append_doesNotThrowOnInvalidArgs_h2NoOp() {
+        // The legacy implementation validated arguments to surface caller
+        // bugs at boundaries. Now that the operation is a no-op there is
+        // nothing to validate; silently ignoring garbage is preferable to
+        // throwing from a method that does nothing useful regardless.
+        Assertions.assertThatCode(() -> context.append(null, null, null))
+                .doesNotThrowAnyException();
+        Assertions.assertThatCode(() -> context.append("", "", ""))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void conversationsRemainEmptyAfterAppendsAcrossManyConversations() {
+        for (int i = 0; i < 25; i++) {
+            context.append("conv-" + i, "msg-" + i, "reply-" + i);
         }
-
-        Assertions.assertThat(context.history("conv-1"))
-                .hasSize(BusinessConversationContext.MAX_INTERACTIONS)
-                .extracting(BusinessConversationContext.Interaction::customerMessage)
-                .containsExactly(
-                        "msg-3",
-                        "msg-4",
-                        "msg-5",
-                        "msg-6",
-                        "msg-7",
-                        "msg-8",
-                        "msg-9",
-                        "msg-10",
-                        "msg-11",
-                        "msg-12");
-    }
-
-    @Test
-    void conversationsAreIsolatedByConversationId() {
-        context.append("conv-a", "Hola A", "Reply A");
-        context.append("conv-b", "Hola B", "Reply B");
-
-        Assertions.assertThat(context.history("conv-a"))
-                .containsExactly(new BusinessConversationContext.Interaction("Hola A", "Reply A"));
-        Assertions.assertThat(context.history("conv-b"))
-                .containsExactly(new BusinessConversationContext.Interaction("Hola B", "Reply B"));
+        for (int i = 0; i < 25; i++) {
+            Assertions.assertThat(context.history("conv-" + i)).isEmpty();
+        }
     }
 }
