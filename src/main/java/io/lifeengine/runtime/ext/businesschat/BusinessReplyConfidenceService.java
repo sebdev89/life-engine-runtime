@@ -114,7 +114,7 @@ public class BusinessReplyConfidenceService {
             case "schedule" -> hasScheduleKnowledge(faqs, catalogItems);
             case "pricing" -> hasPricingKnowledge(faqs, catalogItems);
             case "location" -> hasLocationKnowledge(faqs, catalogItems);
-            default -> BusinessHandoffService.matchesKnowledge(normalizedMessage, faqs);
+            default -> BusinessFaqMatcher.matchesKnowledge(normalizedMessage, faqs);
         };
     }
 

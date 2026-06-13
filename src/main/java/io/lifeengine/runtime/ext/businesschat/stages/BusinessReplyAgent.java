@@ -13,8 +13,9 @@ import io.lifeengine.runtime.ext.businesschat.BusinessChatReplyIo;
 import io.lifeengine.runtime.ext.businesschat.BusinessChatReplyPrompts;
 import io.lifeengine.runtime.ext.businesschat.BusinessChatObservabilityEvents;
 import io.lifeengine.runtime.ext.businesschat.BusinessChatReplyContractV1;
-import io.lifeengine.runtime.ext.businesschat.BusinessChatReplyIo;
+import io.lifeengine.runtime.ext.businesschat.BusinessBotDefinition;
 import io.lifeengine.runtime.ext.businesschat.BusinessConversationContext;
+import io.lifeengine.runtime.ext.businesschat.BusinessFaqMatcher;
 import io.lifeengine.runtime.ext.businesschat.BusinessKnowledgeService;
 import io.lifeengine.runtime.ext.businesschat.BusinessReplyConfidenceService;
 import io.lifeengine.runtime.llm.LlmClient;
@@ -26,6 +27,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
@@ -94,6 +96,22 @@ public class BusinessReplyAgent implements AgentExecutor {
             return agentFailed(ctx, e);
         }
 
+        try {
+            Optional<String> deterministicReply =
+                    buildDeterministicFaqReplyJson(businessContext, ctx.input(), contextHandoffRequired);
+            if (deterministicReply.isPresent()) {
+                return completeSuccessfulReply(
+                        request,
+                        ctx,
+                        businessContext,
+                        contextHandoffRequired,
+                        contextHandoffReason,
+                        deterministicReply.get());
+            }
+        } catch (Exception e) {
+            return agentFailed(ctx, e);
+        }
+
         PromptTemplate template =
                 promptTemplateRegistry.require(
                         BusinessChatReplyPrompts.REPLY_ID, BusinessChatReplyPrompts.VERSION_V1);
@@ -106,60 +124,17 @@ public class BusinessReplyAgent implements AgentExecutor {
                 .flatMap(
                         response -> {
                             try {
-                                StrictAgentJson.BusinessReplyOutput reply =
-                                        StrictAgentJson.parseBusinessReply(response.content());
-                                String canonical;
-                                try {
-                                    canonical =
-                                            finalizeReply(
-                                                    ctx.input(),
-                                                    businessContext,
-                                                    response.content(),
-                                                    contextHandoffRequired,
-                                                    reply.handoffRequired());
-                                } catch (Exception e) {
-                                    return agentFailed(ctx, e);
-                                }
-                                try {
-                                    BusinessChatObservabilityEvents.emitResponseGenerated(
-                                            ctx,
-                                            request.stageId(),
-                                            BusinessChatObservabilityEvents.parseInput(mapper, ctx.input()),
-                                            reply,
-                                            contextHandoffRequired || reply.handoffRequired());
-                                } catch (Exception e) {
-                                    return agentFailed(ctx, e);
-                                }
-                                rememberInteraction(ctx, reply.response());
-                                ctx.putAgentOutput(AGENT_ID, canonical);
-
-                                Map<String, String> attrs = new LinkedHashMap<>();
-                                attrs.put("agentId", AGENT_ID);
-                                attrs.put("intent", reply.intent());
-                                try {
-                                    JsonNode canonicalNode = mapper.readTree(canonical);
-                                    attrs.put(
-                                            "confidence",
-                                            canonicalNode.path("confidence").asText(reply.confidence()));
-                                    attrs.put(
-                                            "confidenceReason",
-                                            canonicalNode.path("confidenceReason").asText(""));
-                                } catch (Exception e) {
-                                    attrs.put("confidence", reply.confidence());
-                                }
-                                attrs.put(
-                                        "handoffRequired",
-                                        Boolean.toString(contextHandoffRequired || reply.handoffRequired()));
-                                if (contextHandoffRequired && contextHandoffReason != null) {
-                                    attrs.put("handoffReason", contextHandoffReason);
-                                }
-                                attrs.put("responsePreview", WorkflowRunContext.truncate(reply.response(), 500));
-                                attrs.put("structured", WorkflowRunContext.truncate(canonical, 500));
-                                ctx.emit(EventType.AGENT_SUCCEEDED, attrs, false);
-
-                                return Mono.just(AgentExecutionResult.ok(AGENT_ID, canonical));
+                                return completeSuccessfulReply(
+                                        request,
+                                        ctx,
+                                        businessContext,
+                                        contextHandoffRequired,
+                                        contextHandoffReason,
+                                        response.content());
                             } catch (IllegalArgumentException e) {
                                 return agentParseFailed(ctx, e);
+                            } catch (Exception e) {
+                                return agentFailed(ctx, e);
                             }
                         })
                 .onErrorResume(
@@ -169,6 +144,92 @@ public class BusinessReplyAgent implements AgentExecutor {
                             }
                             return agentFailed(ctx, error);
                         });
+    }
+
+    private Optional<String> buildDeterministicFaqReplyJson(
+            String businessContextJson, String sourceInputJson, boolean contextHandoffRequired)
+            throws Exception {
+        JsonNode contextNode = mapper.readTree(businessContextJson);
+        JsonNode sourceNode =
+                mapper.readTree(sourceInputJson == null || sourceInputJson.isBlank() ? "{}" : sourceInputJson);
+        String message = sourceNode.path("message").asText("");
+        String contextIntent = contextNode.path("intent").asText("");
+        if (!"support".equals(contextIntent)) {
+            return Optional.empty();
+        }
+
+        BusinessChatReplyIo.Input parsed = BusinessChatReplyIo.readInput(mapper, sourceInputJson);
+        BusinessKnowledgeService.KnowledgeBase knowledge =
+                knowledgeService.resolve(parsed.botId(), parsed.businessContext());
+
+        if (!BusinessFaqMatcher.shouldAnswerFromFaq(message, knowledge.faqs())) {
+            return Optional.empty();
+        }
+
+        BusinessBotDefinition.Faq faq =
+                BusinessFaqMatcher.findBestFaq(message, knowledge.faqs()).orElseThrow();
+        String intent =
+                BusinessFaqMatcher.correctIntent(message, contextIntent, knowledge.faqs());
+
+        ObjectNode reply = mapper.createObjectNode();
+        reply.put("response", faq.answer());
+        reply.put("intent", intent);
+        reply.put("confidence", "HIGH");
+        reply.put("handoffRequired", contextHandoffRequired);
+        reply.put("leadCaptured", false);
+        reply.put(
+                "channel",
+                contextNode.path("channel").asText(sourceNode.path("channel").asText("WEB_CHAT")));
+        return Optional.of(mapper.writeValueAsString(reply));
+    }
+
+    private Mono<AgentExecutionResult> completeSuccessfulReply(
+            AgentExecutionRequest request,
+            WorkflowRunContext ctx,
+            String businessContext,
+            boolean contextHandoffRequired,
+            String contextHandoffReason,
+            String rawReplyContent)
+            throws Exception {
+        StrictAgentJson.BusinessReplyOutput reply =
+                StrictAgentJson.parseBusinessReply(rawReplyContent);
+        String canonical =
+                finalizeReply(
+                        ctx.input(),
+                        businessContext,
+                        rawReplyContent,
+                        contextHandoffRequired,
+                        reply.handoffRequired());
+        BusinessChatObservabilityEvents.emitResponseGenerated(
+                ctx,
+                request.stageId(),
+                BusinessChatObservabilityEvents.parseInput(mapper, ctx.input()),
+                reply,
+                contextHandoffRequired || reply.handoffRequired());
+        rememberInteraction(ctx, reply.response());
+        ctx.putAgentOutput(AGENT_ID, canonical);
+
+        Map<String, String> attrs = new LinkedHashMap<>();
+        attrs.put("agentId", AGENT_ID);
+        attrs.put("intent", reply.intent());
+        try {
+            JsonNode canonicalNode = mapper.readTree(canonical);
+            attrs.put("confidence", canonicalNode.path("confidence").asText(reply.confidence()));
+            attrs.put("confidenceReason", canonicalNode.path("confidenceReason").asText(""));
+        } catch (Exception e) {
+            attrs.put("confidence", reply.confidence());
+        }
+        attrs.put(
+                "handoffRequired",
+                Boolean.toString(contextHandoffRequired || reply.handoffRequired()));
+        if (contextHandoffRequired && contextHandoffReason != null) {
+            attrs.put("handoffReason", contextHandoffReason);
+        }
+        attrs.put("responsePreview", WorkflowRunContext.truncate(reply.response(), 500));
+        attrs.put("structured", WorkflowRunContext.truncate(canonical, 500));
+        ctx.emit(EventType.AGENT_SUCCEEDED, attrs, false);
+
+        return Mono.just(AgentExecutionResult.ok(AGENT_ID, canonical));
     }
 
     /**

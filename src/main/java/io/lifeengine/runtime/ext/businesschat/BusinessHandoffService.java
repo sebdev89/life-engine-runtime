@@ -1,12 +1,10 @@
 package io.lifeengine.runtime.ext.businesschat;
 
-import java.text.Normalizer;
 import java.util.List;
-import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.regex.Pattern;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -25,7 +23,6 @@ public class BusinessHandoffService {
 
     public static final int MAX_FAILURES_BEFORE_HANDOFF = 2;
 
-    private static final Pattern NON_ALPHANUMERIC = Pattern.compile("[^a-z0-9\\s]");
     private static final List<String> FRUSTRATION_SIGNALS =
             List.of(
                     "no entiend",
@@ -70,6 +67,8 @@ public class BusinessHandoffService {
             reason = HandoffReason.UNKNOWN_QUERY;
         } else if (failuresAfterTurn >= MAX_FAILURES_BEFORE_HANDOFF) {
             reason = HandoffReason.MULTIPLE_FAILURES;
+        } else if (stickyHandoffAfterPriorComplaint(request.conversationHistory())) {
+            reason = HandoffReason.FRUSTRATION;
         }
 
         boolean handoffRequired = reason != null;
@@ -109,7 +108,7 @@ public class BusinessHandoffService {
         if ("complaint".equals(intent)) {
             return true;
         }
-        String normalized = normalizeText(message);
+        String normalized = BusinessFaqMatcher.normalizeText(message);
         if (normalized.isBlank()) {
             return false;
         }
@@ -140,40 +139,44 @@ public class BusinessHandoffService {
     }
 
     static boolean matchesKnowledge(String message, List<BusinessBotDefinition.Faq> faqs) {
-        String normalizedMessage = normalizeText(message);
-        if (normalizedMessage.isBlank() || faqs == null || faqs.isEmpty()) {
+        return BusinessFaqMatcher.matchesKnowledge(message, faqs);
+    }
+
+    static boolean stickyHandoffAfterPriorComplaint(List<java.util.Map<String, String>> conversationHistory) {
+        if (conversationHistory == null || conversationHistory.isEmpty()) {
             return false;
         }
-        for (BusinessBotDefinition.Faq faq : faqs) {
-            if (faqMatches(normalizedMessage, normalizeText(faq.question()))
-                    || faqMatches(normalizedMessage, normalizeText(faq.answer()))) {
+        for (java.util.Map<String, String> turn : conversationHistory) {
+            String customer = BusinessFaqMatcher.normalizeText(turn.get("customerMessage"));
+            if (containsComplaintHistorySignal(customer)) {
                 return true;
             }
         }
         return false;
     }
 
-    private static boolean faqMatches(String message, String faqText) {
-        if (faqText.isBlank()) {
+    private static boolean containsComplaintHistorySignal(String normalizedCustomerMessage) {
+        if (normalizedCustomerMessage.isBlank()) {
             return false;
         }
-        for (String token : faqText.split("\\s+")) {
-            if (token.length() >= 4 && message.contains(token)) {
+        List<String> signals =
+                List.of(
+                        "despid",
+                        "despido",
+                        "desped",
+                        "accidente",
+                        "laboral",
+                        "demanda",
+                        "caso nuevo",
+                        "mala experiencia",
+                        "queja",
+                        "denunci");
+        for (String signal : signals) {
+            if (normalizedCustomerMessage.contains(signal)) {
                 return true;
             }
         }
-        return message.contains(faqText);
-    }
-
-    private static String normalizeText(String value) {
-        if (value == null || value.isBlank()) {
-            return "";
-        }
-        String normalized =
-                Normalizer.normalize(value, Normalizer.Form.NFD)
-                        .replaceAll("\\p{M}+", "")
-                        .toLowerCase(Locale.ROOT);
-        return NON_ALPHANUMERIC.matcher(normalized).replaceAll(" ").replaceAll("\\s+", " ").trim();
+        return false;
     }
 
     public enum HandoffReason {
@@ -190,7 +193,18 @@ public class BusinessHandoffService {
             String message,
             String intent,
             String confidence,
-            List<BusinessBotDefinition.Faq> faqs) {}
+            List<BusinessBotDefinition.Faq> faqs,
+            List<Map<String, String>> conversationHistory) {
+
+        public EvaluationRequest(
+                String conversationId,
+                String message,
+                String intent,
+                String confidence,
+                List<BusinessBotDefinition.Faq> faqs) {
+            this(conversationId, message, intent, confidence, faqs, List.of());
+        }
+    }
 
     public record HandoffDecision(boolean handoffRequired, HandoffReason reason) {}
 }

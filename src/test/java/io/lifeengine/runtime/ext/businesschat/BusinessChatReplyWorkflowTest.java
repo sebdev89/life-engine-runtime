@@ -439,6 +439,67 @@ class BusinessChatReplyWorkflowTest {
         Assertions.assertThat(intentEvent.payload().get("handoffReasonPreview")).isEqualTo("FRUSTRATION");
     }
 
+    @Test
+    void businessChatReplyWorkflow_answersPrimeraConsultaFromConfiguredFaq() {
+        enqueueLlm(
+                """
+                {
+                  "intent": "greeting",
+                  "confidence": "HIGH",
+                  "handoffRequired": false,
+                  "leadCaptured": false,
+                  "contextNotes": "Follow-up after complaint."
+                }
+                """);
+
+        Map<String, Object> businessContext = new LinkedHashMap<>();
+        businessContext.put("businessName", "BogaBot — Estudio Jurídico");
+        businessContext.put("industry", "LEGAL");
+        businessContext.put("tone", "profesional");
+        businessContext.put("rules", List.of());
+        businessContext.put(
+                "faqs",
+                List.of(
+                        Map.of(
+                                "question",
+                                "¿Cómo es la primera consulta?",
+                                "answer",
+                                "La primera consulta es una reunión de 30 minutos con un abogado del área correspondiente, presencial u online según disponibilidad.")));
+        businessContext.put("catalogItems", List.of());
+        businessContext.put("retrievedChunks", List.of());
+
+        List<Map<String, String>> history =
+                List.of(
+                        Map.of(
+                                "customerMessage",
+                                "tengo un caso me despidieron despues de 5 anios",
+                                "botResponse",
+                                "Lo siento, necesito mas detalles."));
+
+        Map<String, Object> extra = new LinkedHashMap<>();
+        extra.put("businessContext", businessContext);
+        extra.put("conversationHistory", history);
+
+        int llmRequestsBefore = mockLlm.getRequestCount();
+        UUID runId =
+                startBusinessChatRunWithExtras(
+                        "barberia-demo",
+                        "¿Cómo es la primera consulta?",
+                        "conv-bogabot-" + UUID.randomUUID(),
+                        extra);
+        awaitTerminal(runId, RunStatus.SUCCEEDED);
+
+        Assertions.assertThat(mockLlm.getRequestCount() - llmRequestsBefore).isEqualTo(1);
+
+        com.fasterxml.jackson.databind.JsonNode contextStage = contextStageOutput(runId);
+        Assertions.assertThat(contextStage.get("intent").asText()).isEqualTo("support");
+        Assertions.assertThat(contextStage.get("handoffRequired").asBoolean()).isTrue();
+
+        com.fasterxml.jackson.databind.JsonNode replyStage =
+                stageOutput(runId, BusinessChatReplyModule.STAGE_BUSINESS_REPLY);
+        Assertions.assertThat(replyStage.get("response").asText()).contains("30 minutos");
+    }
+
     private com.fasterxml.jackson.databind.JsonNode stageOutput(UUID runId, String stageId) {
         com.fasterxml.jackson.databind.JsonNode detail =
                 webTestClient

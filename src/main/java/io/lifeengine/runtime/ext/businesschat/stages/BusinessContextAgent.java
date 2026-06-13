@@ -11,6 +11,7 @@ import io.lifeengine.runtime.ext.businesschat.BusinessChatReplyIo;
 import io.lifeengine.runtime.ext.businesschat.BusinessChatReplyPrompts;
 import io.lifeengine.runtime.ext.businesschat.BusinessChatObservabilityEvents;
 import io.lifeengine.runtime.ext.businesschat.BusinessConversationContext;
+import io.lifeengine.runtime.ext.businesschat.BusinessFaqMatcher;
 import io.lifeengine.runtime.ext.businesschat.BusinessHandoffService;
 import io.lifeengine.runtime.ext.businesschat.BusinessReplyConfidenceService;
 import io.lifeengine.runtime.ext.businesschat.BusinessKnowledgeService;
@@ -130,11 +131,15 @@ public class BusinessContextAgent implements AgentExecutor {
                                 StrictAgentJson.BusinessContextOutput context =
                                         StrictAgentJson.parseBusinessContext(response.content());
 
+                                String correctedIntent =
+                                        BusinessFaqMatcher.correctIntent(
+                                                parsed.message(), context.intent(), knowledge.faqs());
+
                                 BusinessReplyConfidenceService.ReplyConfidence confidence =
                                         confidenceService.evaluate(
                                                 parsed.message(),
                                                 toHistoryMaps(conversationHistory),
-                                                context.intent(),
+                                                correctedIntent,
                                                 knowledge.faqs(),
                                                 knowledge.catalogItems(),
                                                 null);
@@ -144,9 +149,10 @@ public class BusinessContextAgent implements AgentExecutor {
                                                 new BusinessHandoffService.EvaluationRequest(
                                                         parsed.conversationId(),
                                                         parsed.message(),
-                                                        context.intent(),
+                                                        correctedIntent,
                                                         confidence.level(),
-                                                        knowledge.faqs()));
+                                                        knowledge.faqs(),
+                                                        toHistoryMaps(conversationHistory)));
 
                                 var combined = mapper.createObjectNode();
                                 combined.put("channel", parsed.channel());
@@ -159,7 +165,7 @@ public class BusinessContextAgent implements AgentExecutor {
                                 if (botProfile != null) {
                                     combined.set("botProfile", mapper.valueToTree(botProfile));
                                 }
-                                combined.put("intent", context.intent());
+                                combined.put("intent", correctedIntent);
                                 combined.put("confidence", confidence.level());
                                 combined.put("confidenceReason", confidence.reason());
                                 combined.put("handoffRequired", handoff.handoffRequired());
@@ -181,7 +187,7 @@ public class BusinessContextAgent implements AgentExecutor {
                                         ctx,
                                         request.stageId(),
                                         parsed,
-                                        context.intent(),
+                                        correctedIntent,
                                         confidence.level(),
                                         confidence.reason(),
                                         handoff.handoffRequired(),
@@ -192,7 +198,7 @@ public class BusinessContextAgent implements AgentExecutor {
 
                                 Map<String, String> attrs = new LinkedHashMap<>();
                                 attrs.put("agentId", AGENT_ID);
-                                attrs.put("intent", context.intent());
+                                attrs.put("intent", correctedIntent);
                                 attrs.put("confidence", confidence.level());
                                 attrs.put("confidenceReason", confidence.reason());
                                 attrs.put("handoffRequired", Boolean.toString(handoff.handoffRequired()));

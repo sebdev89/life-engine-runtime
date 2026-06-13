@@ -1,5 +1,7 @@
 package io.lifeengine.runtime.ext.businesschat;
 
+import java.util.List;
+import java.util.Map;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -114,6 +116,27 @@ class BusinessHandoffServiceTest {
                                 "HIGH"));
         Assertions.assertThat(decision.handoffRequired()).isFalse();
         Assertions.assertThat(handoffService.failureCount("conv-guard")).isZero();
+    }
+
+    @Test
+    void evaluate_keepsHandoffAfterPriorComplaintInHistory() {
+        var history =
+                List.of(
+                        Map.of(
+                                "customerMessage",
+                                "tengo un caso me despidieron despues de 5 anios",
+                                "botResponse",
+                                "Necesito mas datos para ayudarte."));
+        assertHandoff(
+                handoffService.evaluate(
+                        new BusinessHandoffService.EvaluationRequest(
+                                "conv-sticky",
+                                "¿Cómo es la primera consulta?",
+                                "greeting",
+                                "HIGH",
+                                barberiaKnowledge.faqs(),
+                                history)),
+                BusinessHandoffService.HandoffReason.FRUSTRATION);
     }
 
     private BusinessHandoffService.EvaluationRequest request(
