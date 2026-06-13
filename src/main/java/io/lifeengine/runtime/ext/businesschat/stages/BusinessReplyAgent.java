@@ -379,6 +379,14 @@ public class BusinessReplyAgent implements AgentExecutor {
             String title = chunk.path("title").asText("");
             source.put("title", title.isBlank() ? "Knowledge" : title);
             source.put("chunkId", chunkId);
+            String citationId = chunk.path("citationId").asText("");
+            if (!citationId.isBlank()) {
+                source.put("citationId", citationId);
+            }
+            String documentId = chunk.path("documentId").asText("");
+            if (!documentId.isBlank()) {
+                source.put("documentId", documentId);
+            }
             if (chunk.path("score").isNumber()) {
                 source.put("score", chunk.path("score").asDouble());
             }
