@@ -79,6 +79,21 @@ public final class DevKnowledgeAnswerIo {
         return List.copyOf(maps);
     }
 
+    public static List<RetrievedChunk> parseChunksFromRagOutput(ObjectMapper mapper, String ragJson) {
+        if (ragJson == null || ragJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode root = mapper.readTree(ragJson);
+            if (!"ok".equals(root.path("status").asText())) {
+                return List.of();
+            }
+            return parseRetrievedChunks(root.get("chunks"));
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
     private static List<RetrievedChunk> parseRetrievedChunks(JsonNode chunksNode) {
         if (chunksNode == null || !chunksNode.isArray()) {
             return List.of();

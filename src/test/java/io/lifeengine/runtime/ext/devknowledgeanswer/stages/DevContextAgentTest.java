@@ -89,14 +89,53 @@ class DevContextAgentTest {
                 Map.of());
     }
 
+    @Test
+    void execute_withRagQueryToolOutput_usesRagChunksOverEmptyInput() {
+        DevContextAgent agent = new DevContextAgent(MAPPER);
+
+        String workflowInput =
+                """
+                {
+                  "question": "What is reactive programming?",
+                  "knowledgeContext": {"retrievedChunks": []}
+                }
+                """;
+        WorkflowRunContext ctx = testContextWithInput(workflowInput);
+
+        String ragOutput =
+                """
+                {"collectionId":"test","chunks":[
+                  {"text":"Reactive programming is non-blocking.","score":0.88,
+                   "citationId":"","documentId":"d1","chunkId":"c1","title":"Reactive"}
+                ],"status":"ok"}
+                """;
+        ctx.putToolOutput("rag.query", ragOutput);
+
+        // request.input() is the rag-query tool output (simulating stage chain)
+        String ragQueryOutputAsInput = ragOutput;
+
+        StepVerifier.create(agent.execute(request(ctx, ragQueryOutputAsInput), ctx))
+                .assertNext(
+                        result -> {
+                            assertThat(result.output()).contains("\"chunkCount\":1");
+                            assertThat(result.output()).contains("\"hasEvidence\":true");
+                            assertThat(result.output()).contains("Reactive programming is non-blocking");
+                        })
+                .verifyComplete();
+    }
+
     private static WorkflowRunContext testContext() {
+        return testContextWithInput("{}");
+    }
+
+    private static WorkflowRunContext testContextWithInput(String input) {
         UUID runId = UUID.randomUUID();
         InMemoryRunStore store = new InMemoryRunStore();
         return new WorkflowRunContext(
                 runId,
                 "dev.knowledge-answer.v1",
                 "corr-test",
-                "{}",
+                input,
                 store,
                 new RunEventPublisher(),
                 new AtomicBoolean(false));

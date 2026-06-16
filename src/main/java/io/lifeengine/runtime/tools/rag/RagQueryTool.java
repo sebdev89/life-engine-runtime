@@ -169,9 +169,13 @@ public class RagQueryTool implements ToolExecutor {
             try {
                 JsonNode node = mapper.readTree(trimmed);
                 JsonNode q = node.get("query");
+                if (q == null || !q.isTextual() || q.asText().isBlank()) {
+                    q = node.get("question");
+                }
                 if (q != null && q.isTextual()) {
                     return q.asText();
                 }
+                return "";
             } catch (Exception ignore) {
                 // fall through
             }

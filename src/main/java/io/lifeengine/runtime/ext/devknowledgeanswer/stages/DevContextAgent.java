@@ -1,5 +1,6 @@
 package io.lifeengine.runtime.ext.devknowledgeanswer.stages;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.lifeengine.runtime.agents.AgentExecutionRequest;
@@ -46,8 +47,26 @@ public class DevContextAgent implements AgentExecutor {
         }
         ctx.emit(EventType.AGENT_STARTED, Map.of("agentId", AGENT_ID), false);
         try {
-            DevKnowledgeAnswerIo.Input parsed = DevKnowledgeAnswerIo.readInput(mapper, request.input());
-            List<DevKnowledgeAnswerIo.RetrievedChunk> chunks = parsed.knowledgeContext().retrievedChunks();
+            // When rag-query is stage 1, request.input() is the tool output (no question field).
+            // Fall back to the original workflow input when question is absent.
+            String inputForParsing = request.input();
+            try {
+                JsonNode probe = mapper.readTree(inputForParsing);
+                if (!probe.has("question")) {
+                    inputForParsing = ctx.input();
+                }
+            } catch (Exception ignore) {}
+            DevKnowledgeAnswerIo.Input parsed = DevKnowledgeAnswerIo.readInput(mapper, inputForParsing);
+
+            String ragOutput = ctx.toolOutputs().get("rag.query");
+            List<DevKnowledgeAnswerIo.RetrievedChunk> chunks;
+            if (ragOutput != null && !ragOutput.isBlank()) {
+                List<DevKnowledgeAnswerIo.RetrievedChunk> ragChunks =
+                        DevKnowledgeAnswerIo.parseChunksFromRagOutput(mapper, ragOutput);
+                chunks = ragChunks.isEmpty() ? parsed.knowledgeContext().retrievedChunks() : ragChunks;
+            } else {
+                chunks = parsed.knowledgeContext().retrievedChunks();
+            }
             int chunkCount = chunks.size();
             boolean hasEvidence = chunkCount > 0;
             String knowledgeBase = DevKnowledgeAnswerIo.renderKnowledgeBase(chunks);
