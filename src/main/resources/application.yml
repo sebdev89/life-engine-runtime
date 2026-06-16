@@ -78,6 +78,18 @@ lifeengine:
       secret: ${JWT_SECRET:local-dev-jwt-hs512-secret-minimum-32-chars-long-xx}
 
 runtime:
+  tools:
+    search:
+      enabled: ${SEARCH_ENABLED:false}
+      provider: ${SEARCH_PROVIDER:mock}
+      tavily-api-key: ${TAVILY_API_KEY:}
+      timeout: ${SEARCH_TIMEOUT:5s}
+    rag:
+      enabled: ${RAG_TOOL_ENABLED:false}
+      base-url: ${RAG_BASE_URL:http://localhost:8095}
+      default-collection-id: ${RAG_DEFAULT_COLLECTION_ID:}
+      default-top-k: ${RAG_DEFAULT_TOP_K:5}
+      timeout: ${RAG_TOOL_TIMEOUT:10s}
   llm:
     base-url: http://localhost:8000
     model: Qwen/Qwen2.5-Coder-3B-Instruct
