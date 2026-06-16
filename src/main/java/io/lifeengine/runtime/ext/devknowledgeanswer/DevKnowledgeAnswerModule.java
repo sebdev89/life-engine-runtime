@@ -5,6 +5,7 @@ import io.lifeengine.runtime.ext.devknowledgeanswer.stages.DevContextAgent;
 import io.lifeengine.runtime.extension.RuntimeModule;
 import io.lifeengine.runtime.extension.RuntimeRegistry;
 import io.lifeengine.runtime.tools.rag.RagQueryTool;
+import io.lifeengine.runtime.tools.search.SearchWebTool;
 import io.lifeengine.runtime.workflow.WorkflowDefinition;
 import io.lifeengine.runtime.workflow.WorkflowStage;
 import java.time.Duration;
@@ -30,15 +31,19 @@ public class DevKnowledgeAnswerModule implements RuntimeModule {
     public static final String INPUT_CONTRACT = "dev.knowledge-answer-input.v1";
     public static final String OUTPUT_CONTRACT = "dev.knowledge-answer-output.v1";
 
-    public static final String STAGE_RAG = "rag-query";
+    public static final String STAGE_SEARCH = "search-web";
+    public static final String STAGE_RAG    = "rag-query";
     public static final String STAGE_CONTEXT = "dev-context";
-    public static final String STAGE_ANSWER = "dev-answer";
+    public static final String STAGE_ANSWER  = "dev-answer";
 
     private final boolean ragEnabled;
+    private final boolean searchEnabled;
 
     public DevKnowledgeAnswerModule(
-            @Value("${runtime.tools.rag.enabled:false}") boolean ragEnabled) {
+            @Value("${runtime.tools.rag.enabled:false}") boolean ragEnabled,
+            @Value("${runtime.tools.search.enabled:false}") boolean searchEnabled) {
         this.ragEnabled = ragEnabled;
+        this.searchEnabled = searchEnabled;
     }
 
     @Override
@@ -51,13 +56,20 @@ public class DevKnowledgeAnswerModule implements RuntimeModule {
         registry.registerPromptTemplate(DevKnowledgeAnswerPrompts.answer());
 
         List<WorkflowStage> stages = new ArrayList<>();
-        if (ragEnabled) {
-            stages.add(new WorkflowStage(STAGE_RAG, 1, WorkflowStage.StageKind.TOOL, RagQueryTool.TOOL_ID));
+        int order = 1;
+        if (searchEnabled) {
+            stages.add(new WorkflowStage(STAGE_SEARCH, order++, WorkflowStage.StageKind.TOOL, SearchWebTool.TOOL_ID));
         }
-        int contextOrder = ragEnabled ? 2 : 1;
-        int answerOrder  = ragEnabled ? 3 : 2;
-        stages.add(new WorkflowStage(STAGE_CONTEXT, contextOrder, WorkflowStage.StageKind.AGENT, DevContextAgent.AGENT_ID));
-        stages.add(new WorkflowStage(STAGE_ANSWER,  answerOrder,  WorkflowStage.StageKind.AGENT, DevAnswerAgent.AGENT_ID));
+        if (ragEnabled) {
+            stages.add(new WorkflowStage(STAGE_RAG, order++, WorkflowStage.StageKind.TOOL, RagQueryTool.TOOL_ID));
+        }
+        stages.add(new WorkflowStage(STAGE_CONTEXT, order++, WorkflowStage.StageKind.AGENT, DevContextAgent.AGENT_ID));
+        stages.add(new WorkflowStage(STAGE_ANSWER,  order,   WorkflowStage.StageKind.AGENT, DevAnswerAgent.AGENT_ID));
+
+        StringBuilder desc = new StringBuilder("Dev knowledge answer (");
+        if (searchEnabled) desc.append("search-web → ");
+        if (ragEnabled)    desc.append("rag-query → ");
+        desc.append("dev-context → dev-answer)");
 
         registry.registerWorkflow(
                 new WorkflowDefinition(
@@ -66,8 +78,6 @@ public class DevKnowledgeAnswerModule implements RuntimeModule {
                         OUTPUT_CONTRACT,
                         List.copyOf(stages),
                         Duration.ofMinutes(2),
-                        ragEnabled
-                                ? "Dev knowledge answer (rag-query → dev-context → dev-answer)"
-                                : "Dev knowledge answer (dev-context → dev-answer)"));
+                        desc.toString()));
     }
 }

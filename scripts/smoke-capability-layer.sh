@@ -134,6 +134,11 @@ if [ "$SEARCH_ENABLED" = "true" ]; then
   fi
 fi
 
+EXPECT_SEARCH_STAGE="false"
+if [ "$SEARCH_ENABLED" = "true" ]; then
+  EXPECT_SEARCH_STAGE="true"
+fi
+
 # ── Step 6: DevAgent /ask ─────────────────────────────────────────────────────
 step 6 "Submit question via DevAgent POST /api/dev-agent/ask"
 QUESTION_ESCAPED=$(py "import json,sys; print(json.dumps('$QUESTION'))")
@@ -249,7 +254,12 @@ else
 fi
 
 # ── Step 10: Validate stage ordering ──────────────────────────────────────────
-step 10 "Validate stage ordering (rag-query → dev-context → dev-answer)"
+if [ "$EXPECT_SEARCH_STAGE" = "true" ]; then
+  step 10 "Validate stage ordering (search-web → rag-query → dev-context → dev-answer)"
+else
+  step 10 "Validate stage ordering (rag-query → dev-context → dev-answer)"
+fi
+
 STAGE_ORDER=$(py "
 import json, sys
 d = json.loads('''$RUN_DETAIL''')
@@ -258,12 +268,26 @@ started = [e.get('stageId') for e in evts if e.get('type') == 'STAGE_STARTED' an
 print(json.dumps(started))
 " || echo "[]")
 
-RAG_IDX=$(py "import json; stages=json.loads('''$STAGE_ORDER'''); print(stages.index('rag-query') if 'rag-query' in stages else -1)" || echo "-1")
+SRC_IDX=$(py "import json; stages=json.loads('''$STAGE_ORDER'''); print(stages.index('search-web') if 'search-web' in stages else -1)" || echo "-1")
+RAG_IDX=$(py "import json; stages=json.loads('''$STAGE_ORDER'''); print(stages.index('rag-query')  if 'rag-query'  in stages else -1)" || echo "-1")
 CTX_IDX=$(py "import json; stages=json.loads('''$STAGE_ORDER'''); print(stages.index('dev-context') if 'dev-context' in stages else -1)" || echo "-1")
-ANS_IDX=$(py "import json; stages=json.loads('''$STAGE_ORDER'''); print(stages.index('dev-answer') if 'dev-answer' in stages else -1)" || echo "-1")
+ANS_IDX=$(py "import json; stages=json.loads('''$STAGE_ORDER'''); print(stages.index('dev-answer')  if 'dev-answer'  in stages else -1)" || echo "-1")
 
-if [ "$RAG_IDX" -ge 0 ] && [ "$CTX_IDX" -gt "$RAG_IDX" ] && [ "$ANS_IDX" -gt "$CTX_IDX" ] 2>/dev/null; then
-  pass "Stage order: rag-query($RAG_IDX) → dev-context($CTX_IDX) → dev-answer($ANS_IDX)"
+ORDER_OK="true"
+if [ "$EXPECT_SEARCH_STAGE" = "true" ] && [ "$SRC_IDX" -lt 0 ] 2>/dev/null; then
+  ORDER_OK="false"
+  fail "search-web stage not found (expected when SEARCH_ENABLED=true)"
+fi
+if [ "$RAG_IDX" -lt 0 ] 2>/dev/null; then
+  ORDER_OK="false"
+  fail "rag-query stage not found"
+fi
+if [ "$ORDER_OK" = "true" ] && [ "$CTX_IDX" -gt "$RAG_IDX" ] && [ "$ANS_IDX" -gt "$CTX_IDX" ] 2>/dev/null; then
+  if [ "$EXPECT_SEARCH_STAGE" = "true" ]; then
+    pass "Stage order: search-web($SRC_IDX) → rag-query($RAG_IDX) → dev-context($CTX_IDX) → dev-answer($ANS_IDX)"
+  else
+    pass "Stage order: rag-query($RAG_IDX) → dev-context($CTX_IDX) → dev-answer($ANS_IDX)"
+  fi
 else
   fail "Stage order incorrect or missing stages"
   info "Observed stage order: $STAGE_ORDER"
@@ -276,9 +300,10 @@ TOTAL=$((PASS+FAIL))
 if [ "$FAIL" -eq 0 ]; then
   echo -e "  ${GREEN}ALL $PASS/$TOTAL checks PASSED${NC} — Capability Layer: VERIFIED"
   echo ""
-  echo "  DevAgent → Runtime → rag.query → dev-context → dev-answer ✓"
   if [ "$SEARCH_ENABLED" = "true" ]; then
-    echo "  search.web registered (Sprint 4b will add it to the workflow)"
+    echo "  DevAgent → Runtime → search.web → rag.query → dev-context → dev-answer ✓"
+  else
+    echo "  DevAgent → Runtime → rag.query → dev-context → dev-answer ✓"
   fi
 else
   echo -e "  ${RED}$FAIL/$TOTAL checks FAILED${NC}, $PASS passed"

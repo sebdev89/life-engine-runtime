@@ -9,6 +9,7 @@ import io.lifeengine.runtime.agents.AgentExecutor;
 import io.lifeengine.runtime.domain.EventType;
 import io.lifeengine.runtime.ext.devknowledgeanswer.DevKnowledgeAnswerIo;
 import io.lifeengine.runtime.workflow.WorkflowRunContext;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -58,23 +59,28 @@ public class DevContextAgent implements AgentExecutor {
             } catch (Exception ignore) {}
             DevKnowledgeAnswerIo.Input parsed = DevKnowledgeAnswerIo.readInput(mapper, inputForParsing);
 
+            // Merge RAG chunks first (grounded), then search results (enrichment)
+            List<DevKnowledgeAnswerIo.RetrievedChunk> chunks = new ArrayList<>();
             String ragOutput = ctx.toolOutputs().get("rag.query");
-            List<DevKnowledgeAnswerIo.RetrievedChunk> chunks;
             if (ragOutput != null && !ragOutput.isBlank()) {
-                List<DevKnowledgeAnswerIo.RetrievedChunk> ragChunks =
-                        DevKnowledgeAnswerIo.parseChunksFromRagOutput(mapper, ragOutput);
-                chunks = ragChunks.isEmpty() ? parsed.knowledgeContext().retrievedChunks() : ragChunks;
-            } else {
-                chunks = parsed.knowledgeContext().retrievedChunks();
+                chunks.addAll(DevKnowledgeAnswerIo.parseChunksFromRagOutput(mapper, ragOutput));
             }
-            int chunkCount = chunks.size();
+            String searchOutput = ctx.toolOutputs().get("search.web");
+            if (searchOutput != null && !searchOutput.isBlank()) {
+                chunks.addAll(DevKnowledgeAnswerIo.parseChunksFromSearchOutput(mapper, searchOutput));
+            }
+            if (chunks.isEmpty()) {
+                chunks.addAll(parsed.knowledgeContext().retrievedChunks());
+            }
+            List<DevKnowledgeAnswerIo.RetrievedChunk> finalChunks = List.copyOf(chunks);
+            int chunkCount = finalChunks.size();
             boolean hasEvidence = chunkCount > 0;
-            String knowledgeBase = DevKnowledgeAnswerIo.renderKnowledgeBase(chunks);
+            String knowledgeBase = DevKnowledgeAnswerIo.renderKnowledgeBase(finalChunks);
 
             ObjectNode out = mapper.createObjectNode();
             out.put("question", parsed.question());
             out.put("knowledgeBase", knowledgeBase);
-            out.set("retrievedChunks", mapper.valueToTree(DevKnowledgeAnswerIo.toChunkMaps(chunks)));
+            out.set("retrievedChunks", mapper.valueToTree(DevKnowledgeAnswerIo.toChunkMaps(finalChunks)));
             out.put("chunkCount", chunkCount);
             out.put("hasEvidence", hasEvidence);
 

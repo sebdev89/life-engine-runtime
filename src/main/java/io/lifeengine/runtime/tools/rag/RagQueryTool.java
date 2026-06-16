@@ -61,8 +61,8 @@ public class RagQueryTool implements ToolExecutor {
             return Mono.error(new IllegalStateException("Run cancelled"));
         }
 
-        String collectionId = resolveCollectionId(request.input());
-        String query = resolveQuery(request.input());
+        String collectionId = resolveCollectionId(request.input(), ctx);
+        String query = resolveQuery(request.input(), ctx);
         int topK = resolveTopK(request.input());
 
         ctx.emit(EventType.TOOL_STARTED,
@@ -145,26 +145,36 @@ public class RagQueryTool implements ToolExecutor {
         }
     }
 
-    private String resolveCollectionId(String input) {
-        if (input != null && input.trim().startsWith("{")) {
+    private String resolveCollectionId(String input, WorkflowRunContext ctx) {
+        String cid = extractCollectionId(input);
+        if (!cid.isBlank()) return cid;
+        cid = extractCollectionId(ctx.input());
+        if (!cid.isBlank()) return cid;
+        return properties.defaultCollectionId();
+    }
+
+    private String extractCollectionId(String raw) {
+        if (raw != null && raw.trim().startsWith("{")) {
             try {
-                JsonNode node = mapper.readTree(input.trim());
+                JsonNode node = mapper.readTree(raw.trim());
                 JsonNode cid = node.get("collectionId");
                 if (cid != null && cid.isTextual() && !cid.asText().isBlank()) {
                     return cid.asText().trim();
                 }
-            } catch (Exception ignore) {
-                // fall through
-            }
+            } catch (Exception ignore) {}
         }
-        return properties.defaultCollectionId();
+        return "";
     }
 
-    private String resolveQuery(String input) {
-        if (input == null || input.isBlank()) {
-            return "";
-        }
-        String trimmed = input.trim();
+    private String resolveQuery(String input, WorkflowRunContext ctx) {
+        String q = extractQuery(input);
+        if (!q.isBlank()) return q;
+        return extractQuery(ctx.input());
+    }
+
+    private String extractQuery(String raw) {
+        if (raw == null || raw.isBlank()) return "";
+        String trimmed = raw.trim();
         if (trimmed.startsWith("{")) {
             try {
                 JsonNode node = mapper.readTree(trimmed);
@@ -172,13 +182,9 @@ public class RagQueryTool implements ToolExecutor {
                 if (q == null || !q.isTextual() || q.asText().isBlank()) {
                     q = node.get("question");
                 }
-                if (q != null && q.isTextual()) {
-                    return q.asText();
-                }
+                if (q != null && q.isTextual()) return q.asText();
                 return "";
-            } catch (Exception ignore) {
-                // fall through
-            }
+            } catch (Exception ignore) {}
         }
         return trimmed;
     }

@@ -79,6 +79,30 @@ public final class DevKnowledgeAnswerIo {
         return List.copyOf(maps);
     }
 
+    public static List<RetrievedChunk> parseChunksFromSearchOutput(ObjectMapper mapper, String searchJson) {
+        if (searchJson == null || searchJson.isBlank()) return List.of();
+        try {
+            JsonNode root = mapper.readTree(searchJson);
+            if (!"ok".equals(root.path("status").asText())) return List.of();
+            JsonNode results = root.get("results");
+            if (results == null || !results.isArray()) return List.of();
+            List<RetrievedChunk> chunks = new ArrayList<>();
+            int idx = 0;
+            for (JsonNode result : results) {
+                String snippet = textOrBlank(result, "snippet");
+                if (snippet.isBlank()) continue;
+                String title = textOrBlank(result, "title");
+                if (title.isBlank()) title = "Web result";
+                String url = textOrBlank(result, "url");
+                chunks.add(new RetrievedChunk(url, "web-" + idx, title, snippet, 0.0));
+                idx++;
+            }
+            return List.copyOf(chunks);
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
     public static List<RetrievedChunk> parseChunksFromRagOutput(ObjectMapper mapper, String ragJson) {
         if (ragJson == null || ragJson.isBlank()) {
             return List.of();
