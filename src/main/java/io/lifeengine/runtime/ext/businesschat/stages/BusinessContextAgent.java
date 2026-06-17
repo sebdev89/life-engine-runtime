@@ -13,8 +13,11 @@ import io.lifeengine.runtime.ext.businesschat.BusinessChatObservabilityEvents;
 import io.lifeengine.runtime.ext.businesschat.BusinessConversationContext;
 import io.lifeengine.runtime.ext.businesschat.BusinessFaqMatcher;
 import io.lifeengine.runtime.ext.businesschat.BusinessHandoffService;
-import io.lifeengine.runtime.ext.businesschat.BusinessReplyConfidenceService;
 import io.lifeengine.runtime.ext.businesschat.BusinessKnowledgeService;
+import io.lifeengine.runtime.ext.businesschat.BusinessReplyConfidenceService;
+import io.lifeengine.runtime.ext.businesschat.intelligence.BusinessKnowledgeNeedDetector;
+import io.lifeengine.runtime.ext.businesschat.intelligence.DetectionRequest;
+import io.lifeengine.runtime.ext.businesschat.intelligence.KnowledgeNeedDetection;
 import io.lifeengine.runtime.llm.LlmClient;
 import io.lifeengine.runtime.llm.LlmMessage;
 import io.lifeengine.runtime.prompts.PromptTemplate;
@@ -48,6 +51,7 @@ public class BusinessContextAgent implements AgentExecutor {
     private final BusinessConversationContext conversationContext;
     private final BusinessHandoffService handoffService;
     private final BusinessReplyConfidenceService confidenceService;
+    private final BusinessKnowledgeNeedDetector knowledgeNeedDetector;
 
     public BusinessContextAgent(
             LlmClient llmClient,
@@ -56,7 +60,8 @@ public class BusinessContextAgent implements AgentExecutor {
             BusinessKnowledgeService knowledgeService,
             BusinessConversationContext conversationContext,
             BusinessHandoffService handoffService,
-            BusinessReplyConfidenceService confidenceService) {
+            BusinessReplyConfidenceService confidenceService,
+            BusinessKnowledgeNeedDetector knowledgeNeedDetector) {
         this.llmClient = llmClient;
         this.mapper = mapper;
         this.promptTemplateRegistry = promptTemplateRegistry;
@@ -64,6 +69,7 @@ public class BusinessContextAgent implements AgentExecutor {
         this.conversationContext = conversationContext;
         this.handoffService = handoffService;
         this.confidenceService = confidenceService;
+        this.knowledgeNeedDetector = knowledgeNeedDetector;
     }
 
     @Override
@@ -92,6 +98,17 @@ public class BusinessContextAgent implements AgentExecutor {
 
         List<BusinessConversationContext.Interaction> conversationHistory =
                 resolveConversationHistory(parsed);
+
+        KnowledgeNeedDetection detection = knowledgeNeedDetector.detect(
+                DetectionRequest.full(
+                        null,
+                        parsed.botId(),
+                        parsed.channel(),
+                        parsed.message(),
+                        null,
+                        null,
+                        toHistoryMaps(conversationHistory)));
+        BusinessChatObservabilityEvents.emitKnowledgeDetection(ctx, request.stageId(), parsed, detection);
 
         String userInput;
         try {

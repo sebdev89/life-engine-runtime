@@ -2,6 +2,7 @@ package io.lifeengine.runtime.ext.businesschat;
 
 import io.lifeengine.runtime.agents.StrictAgentJson;
 import io.lifeengine.runtime.domain.EventType;
+import io.lifeengine.runtime.ext.businesschat.intelligence.KnowledgeNeedDetection;
 import io.lifeengine.runtime.ext.businesschat.stages.BusinessContextAgent;
 import io.lifeengine.runtime.ext.businesschat.stages.BusinessReplyAgent;
 import io.lifeengine.runtime.workflow.WorkflowRunContext;
@@ -78,6 +79,26 @@ public final class BusinessChatObservabilityEvents {
         attrs.put(ATTR_DEDUP_KEY, dedupKey(EventType.RESPONSE_GENERATED, stageId));
         attrs.put(ATTR_SOURCE, SOURCE_RUNTIME);
         ctx.emit(EventType.RESPONSE_GENERATED, attrs, false);
+    }
+
+    public static void emitKnowledgeDetection(
+            WorkflowRunContext ctx,
+            String stageId,
+            BusinessChatReplyIo.Input input,
+            KnowledgeNeedDetection detection) {
+        Map<String, String> attrs = baseAttrs(BusinessContextAgent.AGENT_ID, stageId, input);
+        attrs.put("knowledgeNeeded", Boolean.toString(detection.needsAny()));
+        attrs.put("knowledgeStrategy", detection.strategy().name());
+        attrs.put("knowledgeReason", detection.reason());
+        if (!detection.ragQuery().isBlank()) {
+            attrs.put("ragQuery", WorkflowRunContext.truncate(detection.ragQuery(), 120));
+        }
+        if (!detection.searchQuery().isBlank()) {
+            attrs.put("searchQuery", WorkflowRunContext.truncate(detection.searchQuery(), 120));
+        }
+        attrs.put(ATTR_DEDUP_KEY, dedupKey(EventType.ROUTING_DECISION, stageId));
+        attrs.put(ATTR_SOURCE, SOURCE_RUNTIME);
+        ctx.emit(EventType.ROUTING_DECISION, attrs, false);
     }
 
     public static BusinessChatReplyIo.Input parseInput(

@@ -25,7 +25,7 @@ public final class BusinessChatReplyPrompts {
             - "conversationHistory": prior turns [{ "customerMessage", "botResponse" }] (may be empty)
             - "botProfile": optional personality hints (tone, personality, greetingStyle, rules)
             - "businessProfile": structured business knowledge (businessName, rules, tone, faqs,
-              optional retrievedChunks from RAG)
+              optional retrievedChunks from RAG, optional leadFacts with caseType/missingFields)
 
             Your job is to classify the customer's intent. Do NOT draft a customer-facing reply.
 
@@ -49,6 +49,8 @@ public final class BusinessChatReplyPrompts {
             - leadCaptured=true only when the customer already provided booking details (name +
               preferred time) in this message.
             - Use conversationHistory to interpret follow-up or elliptical messages (e.g. "y el combo?").
+            - When leadFacts.caseType is present, classify follow-up data answers as support (not greeting
+              or out_of_domain) unless the user clearly changed topic.
             - contextNotes is for the reply agent — never copy it to the customer.
             """
                     .formatted(BusinessChatIntents.PROMPT_ENUM, BusinessChatIntents.CLASSIFICATION_GUIDE)
@@ -124,6 +126,40 @@ public final class BusinessChatReplyPrompts {
             """
                     .strip();
 
+    static final String STRUCTURED_CASE_POLICY =
+            """
+            structuredCasePolicy (HARD):
+            - Si businessProfile.leadFacts o businessContext.leadFacts tiene caseType (despido, purchase),
+              tratá el mensaje del usuario como CONTINUACIÓN del caso, salvo que el usuario diga
+              explícitamente que cambió de tema (ej. "olvidate de eso", "tengo otra consulta",
+              "cambio de tema").
+            - Prohibido: saludar de nuevo, reiniciar el caso, perder caseType, devolver out_of_domain,
+              o producir respuestas genéricas tipo "esa es una ciudad/marca interesante", "¿en qué
+              puedo ayudarte hoy?", "no tengo información sobre ese tema".
+            - Si el usuario menciona una ciudad, fecha, antigüedad, marca, modelo, presupuesto o forma
+              de pago durante un caso activo, interpretalo como dato del caso (no como tema nuevo).
+            - Para caseType=despido: reconocé el despido ya mencionado; pedí solo los missingFields
+              listados en leadFacts; no vuelvas a preguntar si ya está en conversationHistory.
+            - Para caseType=purchase: mantené brand/model en mente; pedí los missingFields que falten
+              (presupuesto / ciudad / forma de pago); guiá hacia cierre o derivación a vendedor.
+            - Si el usuario pide abogado/operador/vendedor o leadFacts.handoffRequired=true, derivá
+              claro al equipo correspondiente en una frase y pedí contacto mínimo.
+            """
+                    .strip();
+
+    static final String ECOMMERCE_SELLER_POLICY =
+            """
+            ecommerceSellerPolicy:
+            - Si industry es ecommerce/watches o el bot vende productos: actuá como vendedor guiado, no
+              como bot muerto.
+            - Si no tenés stock/precio exacto en catálogo o retrievedChunks, NO cortes la conversación:
+              ofrecé modelos del catálogo, preguntá marca/modelo, presupuesto, ciudad y forma de pago.
+            - Ante "¿qué tenés a la venta?" o similar: listá categorías/modelos del catálogo y guiá al
+              cliente hacia una compra concreta.
+            - Mantené referencia al producto ya mencionado (brand/model en leadFacts) en cada respuesta.
+            """
+                    .strip();
+
     static final String REPLY_SYSTEM_PROMPT =
             """
             You are the reply agent for a business customer-service platform. You receive a JSON
@@ -167,6 +203,10 @@ public final class BusinessChatReplyPrompts {
 
             %s
 
+            %s
+
+            %s
+
             Hard rules:
             - response must be concise, clear, and natural — like WhatsApp business chat.
             - Use businessContext.conversationHistory plus source.message for contextual replies;
@@ -175,7 +215,9 @@ public final class BusinessChatReplyPrompts {
             - channel must echo source.channel exactly.
             - Never invent services, prices, or hours not present in retrievedChunks, FAQs, or catalog.
             - If businessContext.retrievedChunks is empty and the answer is not in FAQs/catalog, say you
-              do not have that information and offer human follow-up when appropriate.
+              do not have that information and offer human follow-up when appropriate — EXCEPT for
+              ecommerce/watches bots: follow ecommerceSellerPolicy and keep selling (ask model, budget,
+              city, payment) instead of ending the conversation.
             - Include sources only when retrievedChunks were used to answer; each source must reference
               a chunk from businessContext.retrievedChunks (title, chunkId, score). Omit sources or use
               an empty array when no chunks were used.
@@ -202,7 +244,9 @@ public final class BusinessChatReplyPrompts {
                             HUMAN_TONE_POLICY,
                             CHANNEL_POLICY,
                             GUARDRAIL_POLICY,
-                            HANDOFF_POLICY)
+                            HANDOFF_POLICY,
+                            STRUCTURED_CASE_POLICY,
+                            ECOMMERCE_SELLER_POLICY)
                     .strip();
 
     static final String LEAD_CAPTURE_SYSTEM_PROMPT =
