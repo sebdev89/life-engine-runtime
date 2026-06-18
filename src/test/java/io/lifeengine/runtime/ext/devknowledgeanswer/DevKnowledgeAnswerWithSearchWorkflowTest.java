@@ -61,10 +61,12 @@ class DevKnowledgeAnswerWithSearchWorkflowTest {
 
     @DynamicPropertySource
     static void overrideProperties(DynamicPropertyRegistry registry) {
-        registry.add("runtime.llm.base-url",
-                () -> mockLlm.url("/").toString().replaceAll("/$", ""));
+        String mockUrl = mockLlm.url("/").toString().replaceAll("/$", "");
+        registry.add("runtime.llm.base-url", () -> mockUrl);
         registry.add("runtime.llm.model", () -> "test-model");
         registry.add("runtime.llm.api-key", () -> "test-key");
+        // Phase 4: DevAnswerAgent uses codingLlmClient — point it at the same mock.
+        registry.add("runtime.llm.coding.base-url", () -> mockUrl);
         registry.add("runtime.tools.search.enabled", () -> "true");
         registry.add("runtime.tools.search.provider", () -> "mock");
         registry.add("runtime.tools.rag.enabled", () -> "false");

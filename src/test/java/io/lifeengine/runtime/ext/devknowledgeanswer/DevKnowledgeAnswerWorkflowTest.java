@@ -54,9 +54,12 @@ class DevKnowledgeAnswerWorkflowTest {
 
     @DynamicPropertySource
     static void overrideProperties(DynamicPropertyRegistry registry) {
-        registry.add("runtime.llm.base-url", () -> mockLlm.url("/").toString().replaceAll("/$", ""));
+        String mockUrl = mockLlm.url("/").toString().replaceAll("/$", "");
+        registry.add("runtime.llm.base-url", () -> mockUrl);
         registry.add("runtime.llm.model", () -> "test-model");
         registry.add("runtime.llm.api-key", () -> "test-key");
+        // Phase 4: DevAnswerAgent uses codingLlmClient — point it at the same mock.
+        registry.add("runtime.llm.coding.base-url", () -> mockUrl);
     }
 
     @Test
@@ -169,6 +172,22 @@ class DevKnowledgeAnswerWorkflowTest {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    @Test
+    void devAnswerAgent_emitsModelRoleCodingInLlmSucceededEvent() {
+        enqueueLlm(answerResponseJson());
+
+        UUID runId = startKnowledgeAnswerRun();
+        awaitTerminal(runId, RunStatus.SUCCEEDED);
+
+        List<RuntimeEventResponse> events = collectEvents(runId);
+        RuntimeEventResponse answerLlmSucceeded = events.stream()
+                .filter(e -> "LLM_CALL_SUCCEEDED".equals(e.type()))
+                .filter(e -> DevAnswerAgent.AGENT_ID.equals(e.agentId()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No LLM_CALL_SUCCEEDED for answer agent"));
+        Assertions.assertThat(answerLlmSucceeded.payload()).containsEntry("model_role", "coding");
     }
 
     private UUID startKnowledgeAnswerRun() {

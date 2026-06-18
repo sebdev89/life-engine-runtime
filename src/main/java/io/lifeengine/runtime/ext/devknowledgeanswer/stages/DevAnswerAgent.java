@@ -13,6 +13,7 @@ import io.lifeengine.runtime.domain.EventType;
 import io.lifeengine.runtime.ext.devknowledgeanswer.DevKnowledgeAnswerPrompts;
 import io.lifeengine.runtime.llm.LlmClient;
 import io.lifeengine.runtime.llm.LlmMessage;
+import org.springframework.beans.factory.annotation.Qualifier;
 import io.lifeengine.runtime.llm.LlmResponse;
 import io.lifeengine.runtime.prompts.PromptTemplate;
 import io.lifeengine.runtime.prompts.PromptTemplateRegistry;
@@ -45,7 +46,9 @@ public class DevAnswerAgent implements AgentExecutor {
     private final PromptTemplateRegistry promptTemplateRegistry;
 
     public DevAnswerAgent(
-            LlmClient llmClient, ObjectMapper mapper, PromptTemplateRegistry promptTemplateRegistry) {
+            @Qualifier("codingLlmClient") LlmClient llmClient,
+            ObjectMapper mapper,
+            PromptTemplateRegistry promptTemplateRegistry) {
         this.llmClient = llmClient;
         this.mapper = mapper;
         this.promptTemplateRegistry = promptTemplateRegistry;
