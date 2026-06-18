@@ -15,6 +15,7 @@ import io.lifeengine.runtime.workflow.WorkflowRunContext;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
@@ -38,7 +39,7 @@ public class CryptoMarketAnalystAgent implements AgentExecutor {
     private final PromptTemplateRegistry promptTemplateRegistry;
 
     public CryptoMarketAnalystAgent(
-            LlmClient llmClient, PromptTemplateRegistry promptTemplateRegistry) {
+            @Qualifier("smartLlmClient") LlmClient llmClient, PromptTemplateRegistry promptTemplateRegistry) {
         this.llmClient = llmClient;
         this.promptTemplateRegistry = promptTemplateRegistry;
     }

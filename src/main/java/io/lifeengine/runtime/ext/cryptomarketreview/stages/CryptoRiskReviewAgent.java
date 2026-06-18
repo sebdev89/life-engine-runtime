@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
@@ -59,7 +60,7 @@ public class CryptoRiskReviewAgent implements AgentExecutor {
     private final PromptTemplateRegistry promptTemplateRegistry;
 
     public CryptoRiskReviewAgent(
-            LlmClient llmClient, ObjectMapper mapper, PromptTemplateRegistry promptTemplateRegistry) {
+            @Qualifier("smartLlmClient") LlmClient llmClient, ObjectMapper mapper, PromptTemplateRegistry promptTemplateRegistry) {
         this.llmClient = llmClient;
         this.mapper = mapper;
         this.promptTemplateRegistry = promptTemplateRegistry;

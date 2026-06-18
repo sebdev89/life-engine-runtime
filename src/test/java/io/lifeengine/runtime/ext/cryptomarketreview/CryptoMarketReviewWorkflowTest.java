@@ -79,9 +79,12 @@ class CryptoMarketReviewWorkflowTest {
 
     @DynamicPropertySource
     static void overrideProperties(DynamicPropertyRegistry registry) {
-        registry.add("runtime.llm.base-url", () -> mockLlm.url("/").toString().replaceAll("/$", ""));
+        String mockUrl = mockLlm.url("/").toString().replaceAll("/$", "");
+        registry.add("runtime.llm.base-url", () -> mockUrl);
         registry.add("runtime.llm.model", () -> "test-model");
         registry.add("runtime.llm.api-key", () -> "test-key");
+        // Fase 5: crypto agents use smartLlmClient — point it at the same mock.
+        registry.add("runtime.llm.smart.base-url", () -> mockUrl);
         registry.add(
                 "lifeengine.runtime.ext.crypto-market-review.cryptobot.base-url",
                 () -> mockCryptobot.url("/").toString().replaceAll("/$", ""));
@@ -272,10 +275,11 @@ class CryptoMarketReviewWorkflowTest {
                 CryptoMarketReviewModule.STAGE_FINAL_SUMMARY);
 
         // Every LLM_CALL_SUCCEEDED event carries `model`, `latencyMs`, and `usage`.
+        // Fase 5: crypto agents use smartLlmClient (test-smart-model), not the default.
         List<RuntimeEventResponse> llmSuccess = events.stream()
                 .filter(e -> "LLM_CALL_SUCCEEDED".equals(e.type())).toList();
         for (RuntimeEventResponse ev : llmSuccess) {
-            Assertions.assertThat(ev.payload().get("model")).isEqualTo("test-model");
+            Assertions.assertThat(ev.payload().get("model")).isEqualTo("test-smart-model");
             Assertions.assertThat(ev.payload().get("latencyMs")).matches("\\d+");
             Assertions.assertThat(ev.payload().get("usage")).contains("total_tokens");
         }
@@ -324,6 +328,26 @@ class CryptoMarketReviewWorkflowTest {
                         .as("event %s payload exposes a `systemMessage` key", ev.type())
                         .isNotEqualTo("systemMessage");
             }
+        }
+    }
+
+    @Test
+    void cryptoAgents_emitModelRoleSmartInLlmSucceededEvents() {
+        enqueueLlm(analystResponseJson());
+        enqueueLlm(riskReviewResponseJson());
+        enqueueLlm(finalSummaryResponseJson());
+
+        UUID runId = startMarketReviewRun();
+        awaitTerminal(runId, RunStatus.SUCCEEDED);
+
+        List<RuntimeEventResponse> llmSucceeded = collectEvents(runId).stream()
+                .filter(e -> "LLM_CALL_SUCCEEDED".equals(e.type()))
+                .toList();
+        Assertions.assertThat(llmSucceeded).as("three LLM_CALL_SUCCEEDED events (analyst/risk/summary)").hasSize(3);
+        for (RuntimeEventResponse ev : llmSucceeded) {
+            Assertions.assertThat(ev.payload())
+                    .as("LLM_CALL_SUCCEEDED for agent %s must carry model_role=smart", ev.agentId())
+                    .containsEntry("model_role", "smart");
         }
     }
 

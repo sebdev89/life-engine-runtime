@@ -2,12 +2,14 @@ package io.lifeengine.runtime.llm;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.lifeengine.runtime.agents.EvaluatorAgent;
 import io.lifeengine.runtime.app.RuntimeApplication;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Verifies that Fase 1 multi-model bean wiring is correct:
@@ -23,6 +25,9 @@ import org.springframework.test.context.ActiveProfiles;
 @SpringBootTest(classes = RuntimeApplication.class, webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")
 class LlmMultiBeanWiringTest {
+
+    @Autowired
+    EvaluatorAgent evaluatorAgent;
 
     @Autowired
     LlmClient defaultLlmClient;
@@ -110,5 +115,13 @@ class LlmMultiBeanWiringTest {
     @Test
     void codingLlmClient_hasCodingRole() {
         assertThat(codingLlmClient.modelRole()).isEqualTo(LlmModelRole.CODING);
+    }
+
+    // --- Fase 5: agent → role wiring ---
+
+    @Test
+    void evaluatorAgent_injectsSmartLlmClient() {
+        LlmClient injected = (LlmClient) ReflectionTestUtils.getField(evaluatorAgent, "llmClient");
+        assertThat(injected.modelRole()).isEqualTo(LlmModelRole.SMART);
     }
 }
