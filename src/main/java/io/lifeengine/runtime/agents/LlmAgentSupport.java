@@ -6,6 +6,7 @@ import io.lifeengine.runtime.llm.LlmCallException;
 import io.lifeengine.runtime.llm.LlmCallRecord;
 import io.lifeengine.runtime.llm.LlmClient;
 import io.lifeengine.runtime.llm.LlmMessage;
+import io.lifeengine.runtime.llm.LlmModelRole;
 import io.lifeengine.runtime.llm.LlmRequest;
 import io.lifeengine.runtime.llm.LlmResponse;
 import io.lifeengine.runtime.llm.LlmRetryConfig;
@@ -48,6 +49,7 @@ public final class LlmAgentSupport {
         if (ctx.isCancelled()) {
             return Mono.error(new IllegalStateException("Run cancelled"));
         }
+        LlmModelRole role = llmClient.modelRole();
         String model = llmClient.defaultModel();
         String prompt = messages.stream().map(LlmMessage::content).reduce("", (a, b) -> a + "\n" + b);
         String promptRedacted = SecretRedactor.redact(prompt);
@@ -87,11 +89,13 @@ public final class LlmAgentSupport {
                             long latencyMs = Math.max(0, Instant.now().toEpochMilli() - started.toEpochMilli());
                             Instant finished = Instant.now();
                             String raw = response.content();
-                            ctx.emit(
-                                    EventType.LLM_CALL_SUCCEEDED,
+                            Map<String, String> succeededAttrs =
                                     WorkflowRunContext.llmSucceededAttrs(
-                                            agentId, model, latencyMs, raw, response.usage(), template),
-                                    false);
+                                            agentId, model, latencyMs, raw, response.usage(), template);
+                            if (role != null) {
+                                succeededAttrs.put("model_role", role.name().toLowerCase());
+                            }
+                            ctx.emit(EventType.LLM_CALL_SUCCEEDED, succeededAttrs, false);
                             ctx.appendLlmCallRecord(
                                     new LlmCallRecord(
                                             callId,
@@ -106,17 +110,19 @@ public final class LlmAgentSupport {
                                             started,
                                             finished,
                                             latencyMs,
-                                            Map.of()));
+                                            callMetadata(role)));
                         })
                 .onErrorResume(
                         error -> {
                             long latencyMs = Math.max(0, Instant.now().toEpochMilli() - started.toEpochMilli());
                             Instant finished = Instant.now();
                             if (error instanceof LlmCallException llmEx) {
-                                ctx.emit(
-                                        EventType.LLM_CALL_FAILED,
-                                        WorkflowRunContext.llmFailedAttrs(agentId, model, latencyMs, llmEx),
-                                        false);
+                                Map<String, String> failedAttrs =
+                                        WorkflowRunContext.llmFailedAttrs(agentId, model, latencyMs, llmEx);
+                                if (role != null) {
+                                    failedAttrs.put("model_role", role.name().toLowerCase());
+                                }
+                                ctx.emit(EventType.LLM_CALL_FAILED, failedAttrs, false);
                                 ctx.appendLlmCallRecord(
                                         new LlmCallRecord(
                                                 callId,
@@ -134,7 +140,7 @@ public final class LlmAgentSupport {
                                                 started,
                                                 finished,
                                                 latencyMs,
-                                                Map.of()));
+                                                callMetadata(role)));
                                 log.error(
                                         "LLM_CALL_FAILED agent={} runId={} workflowId={} status={} endpoint={}",
                                         agentId,
@@ -146,10 +152,12 @@ public final class LlmAgentSupport {
                             } else {
                                 String message =
                                         error.getMessage() == null ? error.toString() : error.getMessage();
-                                ctx.emit(
-                                        EventType.LLM_CALL_FAILED,
-                                        WorkflowRunContext.llmFailedAttrs(agentId, model, message, latencyMs),
-                                        false);
+                                Map<String, String> failedAttrs =
+                                        WorkflowRunContext.llmFailedAttrs(agentId, model, message, latencyMs);
+                                if (role != null) {
+                                    failedAttrs.put("model_role", role.name().toLowerCase());
+                                }
+                                ctx.emit(EventType.LLM_CALL_FAILED, failedAttrs, false);
                                 ctx.appendLlmCallRecord(
                                         new LlmCallRecord(
                                                 callId,
@@ -164,10 +172,14 @@ public final class LlmAgentSupport {
                                                 started,
                                                 finished,
                                                 latencyMs,
-                                                Map.of()));
+                                                callMetadata(role)));
                             }
                             return Mono.error(error);
                         });
+    }
+
+    private static Map<String, String> callMetadata(LlmModelRole role) {
+        return role == null ? Map.of() : Map.of("model_role", role.name().toLowerCase());
     }
 
     private static Retry buildRetrySpec(

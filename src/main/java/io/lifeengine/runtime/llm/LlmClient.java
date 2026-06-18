@@ -24,4 +24,12 @@ public interface LlmClient {
     default LlmRetryConfig retryConfig() {
         return LlmRetryConfig.DISABLED;
     }
+
+    /**
+     * Semantic role of this client. {@code null} means the default/primary bean (backward compat).
+     * Role beans ({@code fastLlmClient}, {@code chatLlmClient}, etc.) return their assigned role.
+     */
+    default LlmModelRole modelRole() {
+        return null;
+    }
 }

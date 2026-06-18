@@ -20,6 +20,7 @@ import io.lifeengine.runtime.ext.businesschat.BusinessKnowledgeService;
 import io.lifeengine.runtime.ext.businesschat.BusinessReplyConfidenceService;
 import io.lifeengine.runtime.llm.LlmClient;
 import io.lifeengine.runtime.llm.LlmMessage;
+import org.springframework.beans.factory.annotation.Qualifier;
 import io.lifeengine.runtime.prompts.PromptTemplate;
 import io.lifeengine.runtime.prompts.PromptTemplateRegistry;
 import io.lifeengine.runtime.workflow.WorkflowRunContext;
@@ -52,7 +53,7 @@ public class BusinessReplyAgent implements AgentExecutor {
     private final BusinessKnowledgeService knowledgeService;
 
     public BusinessReplyAgent(
-            LlmClient llmClient,
+            @Qualifier("chatLlmClient") LlmClient llmClient,
             ObjectMapper mapper,
             PromptTemplateRegistry promptTemplateRegistry,
             BusinessConversationContext conversationContext,

@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -18,6 +20,7 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 import reactor.core.publisher.Mono;
 
 /** vLLM / OpenAI-compatible chat completions client (single provider, no fallback). */
+@Primary
 @Component
 public class OpenAiCompatibleLlmClient implements LlmClient {
 
@@ -28,12 +31,28 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     private final WebClient webClient;
     private final RuntimeLlmProperties properties;
     private final RuntimeMetrics metrics;
+    private final LlmModelRole role;
 
+    @Autowired
     public OpenAiCompatibleLlmClient(
             WebClient llmWebClient, RuntimeLlmProperties properties, RuntimeMetrics metrics) {
+        this(llmWebClient, properties, metrics, null);
+    }
+
+    public OpenAiCompatibleLlmClient(
+            WebClient llmWebClient,
+            RuntimeLlmProperties properties,
+            RuntimeMetrics metrics,
+            LlmModelRole role) {
         this.webClient = llmWebClient;
         this.properties = properties;
         this.metrics = metrics;
+        this.role = role;
+    }
+
+    @Override
+    public LlmModelRole modelRole() {
+        return role;
     }
 
     public Mono<Boolean> health() {
@@ -86,8 +105,8 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
                                         model,
                                         toLlmResponse(response).content().length()))
                 .map(this::toLlmResponse)
-                .doOnSuccess(r -> metrics.recordLlmCall(model, "OK"))
-                .doOnError(e -> metrics.recordLlmFailure(model))
+                .doOnSuccess(r -> metrics.recordLlmCall(model, "OK", role))
+                .doOnError(e -> metrics.recordLlmFailure(model, role))
                 .onErrorMap(
                         WebClientResponseException.class,
                         ex -> mapHttpError(ex, model, endpoint, requestJson))

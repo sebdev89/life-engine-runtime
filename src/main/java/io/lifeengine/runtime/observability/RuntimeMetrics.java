@@ -1,5 +1,6 @@
 package io.lifeengine.runtime.observability;
 
+import io.lifeengine.runtime.llm.LlmModelRole;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -62,8 +63,27 @@ public class RuntimeMetrics {
                 .increment();
     }
 
+    public void recordLlmCall(String model, String status, LlmModelRole role) {
+        String roleTag = role == null ? "default" : role.name().toLowerCase();
+        Counter.builder("runtime.llm.calls")
+                .tag("model", model)
+                .tag("status", status)
+                .tag("model_role", roleTag)
+                .register(registry)
+                .increment();
+    }
+
     public void recordLlmFailure(String model) {
         Counter.builder("runtime.llm.failures").tag("model", model).register(registry).increment();
+    }
+
+    public void recordLlmFailure(String model, LlmModelRole role) {
+        String roleTag = role == null ? "default" : role.name().toLowerCase();
+        Counter.builder("runtime.llm.failures")
+                .tag("model", model)
+                .tag("model_role", roleTag)
+                .register(registry)
+                .increment();
     }
 
     public void recordSseStreamOpened() {

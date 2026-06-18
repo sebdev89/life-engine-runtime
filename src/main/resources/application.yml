@@ -91,6 +91,8 @@ runtime:
       default-top-k: ${RAG_DEFAULT_TOP_K:5}
       timeout: ${RAG_TOOL_TIMEOUT:10s}
   llm:
+    # --- Default / backward-compat bean (@Primary OpenAiCompatibleLlmClient) ---
+    # All agents that have not yet been migrated to a role qualifier use this config.
     base-url: http://localhost:8000
     model: Qwen/Qwen2.5-Coder-3B-Instruct
     api-key: local-dev
@@ -102,6 +104,38 @@ runtime:
     # analyst stage stays comfortably under the 2048-token ceiling.
     max-tokens: 192
     temperature: 0
+
+    # --- Multi-model roles (Fase 1 — beans wired, agents not migrated yet) ---
+    # Override per-role via env vars: VLLM_FAST_BASE_URL, VLLM_CHAT_BASE_URL, etc.
+    # See docs/specs/runtime-multi-model-llm.md §4.2 for full config reference.
+    fast:
+      base-url: ${VLLM_FAST_BASE_URL:http://localhost:8000}
+      model: ${VLLM_FAST_MODEL:Qwen/Qwen2.5-Coder-3B-Instruct}
+      api-key: ${VLLM_FAST_API_KEY:local-dev}
+      timeout: 20s
+      max-tokens: 256
+      temperature: 0
+    chat:
+      base-url: ${VLLM_CHAT_BASE_URL:http://localhost:11434}
+      model: ${VLLM_CHAT_MODEL:gemma3:4b}
+      api-key: ${VLLM_CHAT_API_KEY:local-dev}
+      timeout: 60s
+      max-tokens: 512
+      temperature: 0.3
+    smart:
+      base-url: ${VLLM_SMART_BASE_URL:http://localhost:8002}
+      model: ${VLLM_SMART_MODEL:deepseek-ai/DeepSeek-R1-Distill-Qwen-14B}
+      api-key: ${VLLM_SMART_API_KEY:local-dev}
+      timeout: 180s
+      max-tokens: 2048
+      temperature: 0
+    coding:
+      base-url: ${VLLM_CODING_BASE_URL:http://localhost:8000}
+      model: ${VLLM_CODING_MODEL:Qwen/Qwen2.5-Coder-3B-Instruct}
+      api-key: ${VLLM_CODING_API_KEY:local-dev}
+      timeout: 90s
+      max-tokens: 1024
+      temperature: 0
 
 logging:
   pattern:

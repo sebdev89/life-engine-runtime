@@ -57,9 +57,12 @@ class BusinessChatReplyWorkflowTest {
 
     @DynamicPropertySource
     static void overrideProperties(DynamicPropertyRegistry registry) {
-        registry.add("runtime.llm.base-url", () -> mockLlm.url("/").toString().replaceAll("/$", ""));
+        String mockUrl = mockLlm.url("/").toString().replaceAll("/$", "");
+        registry.add("runtime.llm.base-url", () -> mockUrl);
         registry.add("runtime.llm.model", () -> "test-model");
         registry.add("runtime.llm.api-key", () -> "test-key");
+        // Phase 3: BusinessReplyAgent uses chatLlmClient — point it at the same mock.
+        registry.add("runtime.llm.chat.base-url", () -> mockUrl);
     }
 
     @Test
@@ -498,6 +501,23 @@ class BusinessChatReplyWorkflowTest {
         com.fasterxml.jackson.databind.JsonNode replyStage =
                 stageOutput(runId, BusinessChatReplyModule.STAGE_BUSINESS_REPLY);
         Assertions.assertThat(replyStage.get("response").asText()).contains("30 minutos");
+    }
+
+    @Test
+    void businessReplyAgent_emitsModelRoleChatInLlmSucceededEvent() {
+        enqueueLlm(contextResponseJson());
+        enqueueLlm(replyResponseJson());
+
+        UUID runId = startBusinessChatRun();
+        awaitTerminal(runId, RunStatus.SUCCEEDED);
+
+        List<RuntimeEventResponse> events = collectEvents(runId);
+        RuntimeEventResponse replyLlmSucceeded = events.stream()
+                .filter(e -> "LLM_CALL_SUCCEEDED".equals(e.type()))
+                .filter(e -> BusinessReplyAgent.AGENT_ID.equals(e.agentId()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No LLM_CALL_SUCCEEDED for reply agent"));
+        Assertions.assertThat(replyLlmSucceeded.payload()).containsEntry("model_role", "chat");
     }
 
     private com.fasterxml.jackson.databind.JsonNode stageOutput(UUID runId, String stageId) {

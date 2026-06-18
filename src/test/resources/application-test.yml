@@ -40,3 +40,31 @@ runtime:
     timeout: 5s
     max-tokens: 256
     temperature: 0
+    fast:
+      base-url: http://localhost:8000
+      model: test-fast-model
+      api-key: test-key
+      timeout: 5s
+      max-tokens: 256
+      temperature: 0
+    chat:
+      base-url: http://localhost:8000
+      model: test-chat-model
+      api-key: test-key
+      timeout: 5s
+      max-tokens: 256
+      temperature: 0
+    smart:
+      base-url: http://localhost:8000
+      model: test-smart-model
+      api-key: test-key
+      timeout: 5s
+      max-tokens: 256
+      temperature: 0
+    coding:
+      base-url: http://localhost:8000
+      model: test-coding-model
+      api-key: test-key
+      timeout: 5s
+      max-tokens: 256
+      temperature: 0

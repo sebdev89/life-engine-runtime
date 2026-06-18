@@ -7,8 +7,10 @@ import io.lifeengine.runtime.core.RunStore;
 import io.lifeengine.runtime.domain.RuntimeEvent;
 import io.lifeengine.runtime.events.RunEventPublisher;
 import io.lifeengine.runtime.llm.LlmCallException;
+import io.lifeengine.runtime.llm.LlmCallRecord;
 import io.lifeengine.runtime.llm.LlmClient;
 import io.lifeengine.runtime.llm.LlmMessage;
+import io.lifeengine.runtime.llm.LlmModelRole;
 import io.lifeengine.runtime.llm.LlmRequest;
 import io.lifeengine.runtime.llm.LlmResponse;
 import io.lifeengine.runtime.llm.LlmRetryConfig;
@@ -130,6 +132,50 @@ class LlmAgentSupportRetryTest {
         assertThat(failedCount).isEqualTo(1);
     }
 
+    @Test
+    void callLlm_withChatRole_emitsModelRoleChatOnSuccess() {
+        ScriptedLlmClient llm =
+                new ScriptedLlmClient(LlmRetryConfig.DISABLED)
+                        .withRole(LlmModelRole.CHAT)
+                        .thenSucceed(new LlmResponse("ok", Map.of()));
+
+        Harness h = harness();
+        StepVerifier.create(
+                        LlmAgentSupport.callLlm(
+                                h.ctx, "stage-1", "agent-1", llm, List.of(new LlmMessage("user", "hi"))))
+                .assertNext(r -> assertThat(r.content()).isEqualTo("ok"))
+                .verifyComplete();
+
+        Map<String, String> attrs = h.eventAttrs("LLM_CALL_SUCCEEDED");
+        assertThat(attrs).containsEntry("model_role", "chat");
+        assertThat(attrs).doesNotContainKey("modelRole");
+
+        List<LlmCallRecord> records = h.store.llmCallRecordsFor(h.runId);
+        assertThat(records.get(0).metadata()).containsEntry("model_role", "chat");
+    }
+
+    @Test
+    void callLlm_withChatRole_emitsModelRoleChatOnFailure() {
+        ScriptedLlmClient llm =
+                new ScriptedLlmClient(LlmRetryConfig.DISABLED)
+                        .withRole(LlmModelRole.CHAT)
+                        .thenFail(http400());
+
+        Harness h = harness();
+        StepVerifier.create(
+                        LlmAgentSupport.callLlm(
+                                h.ctx, "stage-1", "agent-1", llm, List.of(new LlmMessage("user", "hi"))))
+                .expectErrorSatisfies(err -> assertThat(err).isInstanceOf(LlmCallException.class))
+                .verify();
+
+        Map<String, String> attrs = h.eventAttrs("LLM_CALL_FAILED");
+        assertThat(attrs).containsEntry("model_role", "chat");
+        assertThat(attrs).doesNotContainKey("modelRole");
+
+        List<LlmCallRecord> records = h.store.llmCallRecordsFor(h.runId);
+        assertThat(records.get(0).metadata()).containsEntry("model_role", "chat");
+    }
+
     private static LlmCallException http503() {
         return LlmCallException.httpFailure(
                 503, "service unavailable", "http://test/v1/chat/completions", "test-model", "{}", null);
@@ -169,6 +215,14 @@ class LlmAgentSupportRetryTest {
                     .map(e -> e.attributes().getOrDefault("message", ""))
                     .toList();
         }
+
+        Map<String, String> eventAttrs(String type) {
+            return store.eventsFor(runId).stream()
+                    .filter(e -> type.equals(e.type()))
+                    .map(RuntimeEvent::attributes)
+                    .findFirst()
+                    .orElse(Map.of());
+        }
     }
 
     /** Per-invocation scripted LlmClient used to deterministically replay successes/failures. */
@@ -176,9 +230,20 @@ class LlmAgentSupportRetryTest {
         private final Deque<Mono<LlmResponse>> script = new ArrayDeque<>();
         private final AtomicInteger calls = new AtomicInteger();
         private final LlmRetryConfig retry;
+        private LlmModelRole role;
 
         ScriptedLlmClient(LlmRetryConfig retry) {
             this.retry = retry;
+        }
+
+        ScriptedLlmClient withRole(LlmModelRole role) {
+            this.role = role;
+            return this;
+        }
+
+        @Override
+        public LlmModelRole modelRole() {
+            return role;
         }
 
         ScriptedLlmClient thenSucceed(LlmResponse response) {
