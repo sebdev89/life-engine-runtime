@@ -1,74 +1,24 @@
-name: ci
+name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
-    branches: [main]
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  push:
+    branches:
+      - main
 
 jobs:
-  build-and-test:
-    name: build + test (java 21, ubuntu)
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 21 (Temurin)
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
+          java-version: '21'
           distribution: temurin
-          java-version: 21
           cache: maven
 
-      - name: Show toolchain
-        run: |
-          java -version
-          mvn -v
-
-      # ---------------------------------------------------------------------------
-      # Compile gate — fast feedback before the test lane runs.
-      # ---------------------------------------------------------------------------
-      - name: Compile (main + test sources)
-        run: mvn -B -ntp -DskipTests test-compile
-
-      # ---------------------------------------------------------------------------
-      # Default test lane.
-      #
-      # The unit/WebFlux suite is fully hermetic: persistence is forced to the
-      # in-memory RunStore via application-test.yml and LLM calls use MockWebServer
-      # so no PostgreSQL / vLLM is required here.
-      #
-      # The R2DBC integration test (R2dbcRunStoreTest) starts an ephemeral
-      # postgres:16-alpine via Testcontainers when a Docker daemon is reachable.
-      # GitHub-hosted ubuntu-latest runners ship Docker, so this lane exercises the
-      # full persistence path. On runners without Docker (rare), Testcontainers
-      # fails fast — we do NOT silently skip; an opt-out is a deliberate, separate
-      # workflow change rather than an accidental green build.
-      # ---------------------------------------------------------------------------
-      - name: Run tests (mvn test)
-        run: mvn -B -ntp test
-
-      # ---------------------------------------------------------------------------
-      # On failure: publish Surefire reports so the failing test, stack trace, and
-      # captured runtime logs are recoverable from the run summary.
-      # ---------------------------------------------------------------------------
-      - name: Upload Surefire reports (on failure)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: surefire-reports
-          path: |
-            target/surefire-reports/**
-            target/site/surefire-report.html
-          if-no-files-found: ignore
-          retention-days: 14
+      - name: Run tests
+        run: mvn test
