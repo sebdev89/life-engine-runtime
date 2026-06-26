@@ -1,13 +1,13 @@
 name: CI
 
 on:
-  pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
 
     steps:
@@ -17,8 +17,8 @@ jobs:
         uses: actions/setup-java@v4
         with:
           java-version: '21'
-          distribution: temurin
-          cache: maven
+          distribution: 'temurin'
+          cache: 'maven'
 
-      - name: Run tests
-        run: mvn test
+      - name: Build and test
+        run: mvn verify -B --no-transfer-progress
