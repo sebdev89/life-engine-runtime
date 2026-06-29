@@ -14,7 +14,7 @@ import reactor.core.publisher.Mono;
 
 @Configuration
 @EnableWebFluxSecurity
-@EnableConfigurationProperties({RuntimeSecurityProperties.class, RuntimeJwtProperties.class})
+@EnableConfigurationProperties({RuntimeSecurityProperties.class, RuntimeJwtProperties.class, RuntimeJwksProperties.class})
 public class RuntimeSecurityConfig {
 
     @Bean

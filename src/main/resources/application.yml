@@ -70,6 +70,8 @@ lifeengine:
       # (tracked in docs/extraction/local-runbook.md). Set to `false` once the auth
       # Flyway migration ships proper RUNTIME_* permissions.
       derive-runtime-authorities-from-role: ${RUNTIME_DERIVE_AUTHORITIES_FROM_ROLE:true}
+      jwks:
+        uri: ${AUTH_JWKS_URI:}
   security:
     jwt:
       # Local default MUST match life-engine-auth/src/main/resources/application-local.yml so

@@ -9,6 +9,7 @@ import io.jsonwebtoken.security.Keys;
 import io.jsonwebtoken.security.SignatureException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -18,7 +19,7 @@ import java.util.UUID;
 import javax.crypto.SecretKey;
 import org.springframework.stereotype.Service;
 
-/** Parses life-engine HS256 JWTs; does not issue tokens (platform auth module does). */
+/** Parses life-engine JWTs (HS256 or RS256); does not issue tokens (platform auth module does). */
 @Service
 public class RuntimeJwtService {
 
@@ -26,8 +27,12 @@ public class RuntimeJwtService {
 
     private final SecretKey key;
     private final RuntimeSecurityProperties securityProperties;
+    private final JwksPublicKeyProvider jwksKeyProvider;
 
-    public RuntimeJwtService(RuntimeJwtProperties props, RuntimeSecurityProperties securityProperties) {
+    public RuntimeJwtService(
+            RuntimeJwtProperties props,
+            RuntimeSecurityProperties securityProperties,
+            JwksPublicKeyProvider jwksKeyProvider) {
         String secret = props.secret() == null ? "" : props.secret();
         byte[] bytes = secret.getBytes(StandardCharsets.UTF_8);
         if (bytes.length < 32) {
@@ -36,6 +41,7 @@ public class RuntimeJwtService {
         }
         this.key = Keys.hmacShaKeyFor(bytes);
         this.securityProperties = securityProperties;
+        this.jwksKeyProvider = jwksKeyProvider;
     }
 
     public record ParseOutcome(Optional<RuntimePrincipal> principal, Optional<String> failureReason) {
@@ -63,7 +69,17 @@ public class RuntimeJwtService {
             return ParseOutcome.failed("missing");
         }
         try {
-            Claims claims = Jwts.parser().verifyWith(key).build().parseSignedClaims(rawToken).getPayload();
+            Claims claims;
+            String alg = peekAlg(rawToken);
+            if ("RS256".equals(alg) && jwksKeyProvider.isConfigured()) {
+                var pubKey = jwksKeyProvider.getPublicKey();
+                if (pubKey.isEmpty()) {
+                    return ParseOutcome.failed("jwks_unavailable");
+                }
+                claims = Jwts.parser().verifyWith(pubKey.get()).build().parseSignedClaims(rawToken).getPayload();
+            } else {
+                claims = Jwts.parser().verifyWith(key).build().parseSignedClaims(rawToken).getPayload();
+            }
             UUID userId = UUID.fromString(claims.getSubject());
             String email = claims.get("email", String.class);
             String role = claims.get("role", String.class);
@@ -79,6 +95,26 @@ public class RuntimeJwtService {
             return ParseOutcome.failed("invalid_signature");
         } catch (JwtException | IllegalArgumentException ex) {
             return ParseOutcome.failed("invalid");
+        }
+    }
+
+    static String peekAlg(String rawToken) {
+        try {
+            String[] parts = rawToken.split("\\.", 3);
+            if (parts.length < 1) return "HS256";
+            int mod = parts[0].length() % 4;
+            String padded = mod == 0 ? parts[0] : parts[0] + "====".substring(mod);
+            byte[] decoded = Base64.getUrlDecoder().decode(padded);
+            String header = new String(decoded, StandardCharsets.UTF_8);
+            int algIdx = header.indexOf("\"alg\"");
+            if (algIdx < 0) return "HS256";
+            int colon = header.indexOf(':', algIdx);
+            int start = header.indexOf('"', colon + 1) + 1;
+            int end = header.indexOf('"', start);
+            if (start <= 0 || end <= start) return "HS256";
+            return header.substring(start, end);
+        } catch (Exception e) {
+            return "HS256";
         }
     }
 
