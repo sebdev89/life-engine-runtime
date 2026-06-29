@@ -72,9 +72,10 @@ public class RuntimeJwtService {
             Claims claims;
             String alg = peekAlg(rawToken);
             if ("RS256".equals(alg) && jwksKeyProvider.isConfigured()) {
-                var pubKey = jwksKeyProvider.getPublicKey();
+                String kid = peekKid(rawToken);
+                var pubKey = jwksKeyProvider.getPublicKey(kid);
                 if (pubKey.isEmpty()) {
-                    return ParseOutcome.failed("jwks_unavailable");
+                    return ParseOutcome.failed("jwks_key_not_found");
                 }
                 claims = Jwts.parser().verifyWith(pubKey.get()).build().parseSignedClaims(rawToken).getPayload();
             } else {
@@ -99,22 +100,30 @@ public class RuntimeJwtService {
     }
 
     static String peekAlg(String rawToken) {
+        return peekHeaderField(rawToken, "\"alg\"", "HS256");
+    }
+
+    static String peekKid(String rawToken) {
+        return peekHeaderField(rawToken, "\"kid\"", "");
+    }
+
+    private static String peekHeaderField(String rawToken, String fieldKey, String defaultValue) {
         try {
             String[] parts = rawToken.split("\\.", 3);
-            if (parts.length < 1) return "HS256";
+            if (parts.length < 1) return defaultValue;
             int mod = parts[0].length() % 4;
             String padded = mod == 0 ? parts[0] : parts[0] + "====".substring(mod);
             byte[] decoded = Base64.getUrlDecoder().decode(padded);
             String header = new String(decoded, StandardCharsets.UTF_8);
-            int algIdx = header.indexOf("\"alg\"");
-            if (algIdx < 0) return "HS256";
-            int colon = header.indexOf(':', algIdx);
+            int fieldIdx = header.indexOf(fieldKey);
+            if (fieldIdx < 0) return defaultValue;
+            int colon = header.indexOf(':', fieldIdx);
             int start = header.indexOf('"', colon + 1) + 1;
             int end = header.indexOf('"', start);
-            if (start <= 0 || end <= start) return "HS256";
+            if (start <= 0 || end <= start) return defaultValue;
             return header.substring(start, end);
         } catch (Exception e) {
-            return "HS256";
+            return defaultValue;
         }
     }
 
