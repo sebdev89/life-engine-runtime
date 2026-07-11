@@ -49,6 +49,38 @@ class BusinessConversationContextTest {
     }
 
     @Test
+    void recentHistory_isEmptyForUnknownConversation() {
+        Assertions.assertThat(context.recentHistory("conv-new")).isEmpty();
+    }
+
+    @Test
+    void recentHistory_returnsFullHistory_whenBelowPromptCap() {
+        context.append("conv-1", "msg-1", "reply-1");
+        context.append("conv-1", "msg-2", "reply-2");
+
+        Assertions.assertThat(context.recentHistory("conv-1"))
+                .extracting(BusinessConversationContext.Interaction::customerMessage)
+                .containsExactly("msg-1", "msg-2");
+    }
+
+    @Test
+    void recentHistory_keepsOnlyMostRecentTurns_whenConversationOutgrowsPromptCap() {
+        // MAX_INTERACTIONS keeps 10 turns in memory, but the prompt should only ever
+        // see the last MAX_PROMPT_INTERACTIONS of them regardless of how long the
+        // conversation runs (KAN-156 — prompt size must not scale with turn count).
+        for (int i = 1; i <= 9; i++) {
+            context.append("conv-1", "msg-" + i, "reply-" + i);
+        }
+
+        Assertions.assertThat(context.recentHistory("conv-1"))
+                .hasSize(BusinessConversationContext.MAX_PROMPT_INTERACTIONS)
+                .extracting(BusinessConversationContext.Interaction::customerMessage)
+                .containsExactly("msg-6", "msg-7", "msg-8", "msg-9");
+
+        Assertions.assertThat(context.history("conv-1")).hasSize(9);
+    }
+
+    @Test
     void conversationsAreIsolatedByConversationId() {
         context.append("conv-a", "Hola A", "Reply A");
         context.append("conv-b", "Hola B", "Reply B");

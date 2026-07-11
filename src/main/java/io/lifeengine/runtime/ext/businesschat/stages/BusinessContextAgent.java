@@ -84,8 +84,10 @@ public class BusinessContextAgent implements AgentExecutor {
 
         BusinessChatEvents.emitStarted(ctx, request.stageId(), parsed);
 
+        // KAN-156: bounded prompt-history window so prompt size (and reasoning-token spend on a
+        // "thinking" model) stays flat as the conversation grows instead of scaling with turn count.
         List<BusinessConversationContext.Interaction> conversationHistory =
-                conversationContext.history(parsed.conversationId());
+                conversationContext.recentHistory(parsed.conversationId());
 
         String userInput;
         try {
