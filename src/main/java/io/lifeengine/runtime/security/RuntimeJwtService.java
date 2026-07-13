@@ -29,6 +29,12 @@ public class RuntimeJwtService {
     private final RuntimeSecurityProperties securityProperties;
     private final JwksPublicKeyProvider jwksKeyProvider;
 
+    /** Used only when JWKS verification is configured and no real HS256 secret is set — this
+     * service never signs tokens, so the dummy key only matters if an HS256 token somehow
+     * arrives while running in JWKS mode (rejected on signature mismatch, same as any other
+     * bad token). Mirrors life-engine-auth's JwtService#buildHmacKeyOrDummy. */
+    private static final String JWKS_MODE_DUMMY_SECRET = "runtime-jwks-mode-hmac-fallback-dummy-key!!";
+
     public RuntimeJwtService(
             RuntimeJwtProperties props,
             RuntimeSecurityProperties securityProperties,
@@ -36,8 +42,14 @@ public class RuntimeJwtService {
         String secret = props.secret() == null ? "" : props.secret();
         byte[] bytes = secret.getBytes(StandardCharsets.UTF_8);
         if (bytes.length < 32) {
-            throw new IllegalStateException(
-                    "lifeengine.security.jwt.secret must be at least 32 UTF-8 bytes for HS256");
+            if (jwksKeyProvider.isConfigured()) {
+                // KAN-32 follow-up: JWT_SECRET is no longer required once AUTH_JWKS_URI is set —
+                // this service only ever verifies, never signs, so there is nothing to protect.
+                bytes = JWKS_MODE_DUMMY_SECRET.getBytes(StandardCharsets.UTF_8);
+            } else {
+                throw new IllegalStateException(
+                        "lifeengine.security.jwt.secret must be at least 32 UTF-8 bytes for HS256");
+            }
         }
         this.key = Keys.hmacShaKeyFor(bytes);
         this.securityProperties = securityProperties;
