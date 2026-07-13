@@ -25,15 +25,13 @@ public class RuntimeJwtService {
 
     private static final String PLATFORM_ROLE_ADMIN = "ROLE_ADMIN";
 
+    /** Null when HS256 verification is disabled (no real secret + JWKS configured) — see
+     * constructor. Never a placeholder/dummy value: a fixed fallback key sitting in source
+     * control would let anyone forge an HS256 token that verifies successfully, which is worse
+     * than just refusing to verify HS256 tokens at all. */
     private final SecretKey key;
     private final RuntimeSecurityProperties securityProperties;
     private final JwksPublicKeyProvider jwksKeyProvider;
-
-    /** Used only when JWKS verification is configured and no real HS256 secret is set — this
-     * service never signs tokens, so the dummy key only matters if an HS256 token somehow
-     * arrives while running in JWKS mode (rejected on signature mismatch, same as any other
-     * bad token). Mirrors life-engine-auth's JwtService#buildHmacKeyOrDummy. */
-    private static final String JWKS_MODE_DUMMY_SECRET = "runtime-jwks-mode-hmac-fallback-dummy-key!!";
 
     public RuntimeJwtService(
             RuntimeJwtProperties props,
@@ -44,14 +42,16 @@ public class RuntimeJwtService {
         if (bytes.length < 32) {
             if (jwksKeyProvider.isConfigured()) {
                 // KAN-32 follow-up: JWT_SECRET is no longer required once AUTH_JWKS_URI is set —
-                // this service only ever verifies, never signs, so there is nothing to protect.
-                bytes = JWKS_MODE_DUMMY_SECRET.getBytes(StandardCharsets.UTF_8);
+                // this service only ever verifies, never signs. HS256 verification is disabled
+                // outright (key stays null) rather than falling back to a dummy key.
+                this.key = null;
             } else {
                 throw new IllegalStateException(
                         "lifeengine.security.jwt.secret must be at least 32 UTF-8 bytes for HS256");
             }
+        } else {
+            this.key = Keys.hmacShaKeyFor(bytes);
         }
-        this.key = Keys.hmacShaKeyFor(bytes);
         this.securityProperties = securityProperties;
         this.jwksKeyProvider = jwksKeyProvider;
     }
@@ -90,8 +90,11 @@ public class RuntimeJwtService {
                     return ParseOutcome.failed("jwks_key_not_found");
                 }
                 claims = Jwts.parser().verifyWith(pubKey.get()).build().parseSignedClaims(rawToken).getPayload();
-            } else {
+            } else if (key != null) {
                 claims = Jwts.parser().verifyWith(key).build().parseSignedClaims(rawToken).getPayload();
+            } else {
+                // HS256 disabled (see constructor) and this isn't a verifiable RS256 token.
+                return ParseOutcome.failed("hs256_disabled");
             }
             UUID userId = UUID.fromString(claims.getSubject());
             String email = claims.get("email", String.class);
