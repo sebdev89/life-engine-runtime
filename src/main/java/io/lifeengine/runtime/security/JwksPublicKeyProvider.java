@@ -63,6 +63,9 @@ public class JwksPublicKeyProvider {
         long now = System.currentTimeMillis();
         if (!cachedKeys.isEmpty() && now < expiryMs) return cachedKeys;
         try {
+            // Blocking by design — safe ONLY because every caller (RuntimeJwtAuthenticationWebFilter)
+            // runs this whole method on Schedulers.boundedElastic(), not the Netty event loop. Do
+            // NOT call this directly from a WebFlux request-handling thread — see KAN-105.
             String body = WebClient.create().get().uri(jwksUri)
                     .retrieve().bodyToMono(String.class)
                     .block(Duration.ofSeconds(10));

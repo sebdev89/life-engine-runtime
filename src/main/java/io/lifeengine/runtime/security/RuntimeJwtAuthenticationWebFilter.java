@@ -18,6 +18,7 @@ import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /** Validates Bearer JWT (life-engine format) before Spring Security authorization. */
 @Component
@@ -52,6 +53,17 @@ public class RuntimeJwtAuthenticationWebFilter implements WebFilter {
             return chain.filter(exchange);
         }
         String auth = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
+        // KAN-105: token parsing can now involve a JWKS HTTP fetch (JwksPublicKeyProvider), which
+        // blocks. This filter runs on a Reactor Netty event-loop thread, where any direct .block()
+        // trips Reactor's non-blocking-thread check. Run the whole parse step on boundedElastic
+        // instead of just the fetch — a blocking call anywhere in a synchronous call stack that
+        // started on the event loop is still on the event loop.
+        return Mono.fromCallable(() -> resolveOutcome(auth, exchange))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(outcome -> continueFilter(outcome, auth, exchange, chain));
+    }
+
+    private RuntimeJwtService.ParseOutcome resolveOutcome(String auth, ServerWebExchange exchange) {
         var outcome = jwtService.parseAuthorizationHeader(auth);
         if (outcome.principal().isEmpty() && isSseEndpoint(exchange)) {
             // EventSource can't set headers; fall back to ?access_token= for SSE GETs only.
@@ -60,6 +72,14 @@ public class RuntimeJwtAuthenticationWebFilter implements WebFilter {
                 outcome = jwtService.parseToken(token);
             }
         }
+        return outcome;
+    }
+
+    private Mono<Void> continueFilter(
+            RuntimeJwtService.ParseOutcome outcome,
+            String auth,
+            ServerWebExchange exchange,
+            WebFilterChain chain) {
         if (outcome.principal().isEmpty()) {
             String reason = outcome.failureReason().orElse("unknown");
             log.warn(
