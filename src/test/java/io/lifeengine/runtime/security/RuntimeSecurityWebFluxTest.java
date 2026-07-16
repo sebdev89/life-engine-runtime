@@ -98,11 +98,13 @@ class RuntimeSecurityWebFluxTest {
                 .exists();
     }
 
+    // /actuator/metrics stays ADMIN-gated (KAN-195 opened only /actuator/info as internal-readable, like
+    // /actuator/prometheus). These pin that the rest of actuator still requires ADMIN.
     @Test
-    void actuatorInfo_withoutAdmin_returns403() {
+    void actuatorMetrics_withoutAdmin_returns403() {
         webTestClient
                 .get()
-                .uri("/actuator/info")
+                .uri("/actuator/metrics")
                 .header("Authorization", RuntimeTestJwt.bearer(List.of(RuntimeAuthorities.VIEWER)))
                 .exchange()
                 .expectStatus()
@@ -110,10 +112,10 @@ class RuntimeSecurityWebFluxTest {
     }
 
     @Test
-    void actuatorInfo_withAdmin_returns200() {
+    void actuatorMetrics_withAdmin_returns200() {
         webTestClient
                 .get()
-                .uri("/actuator/info")
+                .uri("/actuator/metrics")
                 .header("Authorization", RuntimeTestJwt.bearer(List.of(RuntimeAuthorities.ADMIN)))
                 .exchange()
                 .expectStatus()
@@ -178,10 +180,10 @@ class RuntimeSecurityWebFluxTest {
     }
 
     @Test
-    void actuatorInfo_withPlatformRoleAdmin_derivesAdminAuthority() {
+    void actuatorMetrics_withPlatformRoleAdmin_derivesAdminAuthority() {
         webTestClient
                 .get()
-                .uri("/actuator/info")
+                .uri("/actuator/metrics")
                 .header(
                         "Authorization",
                         RuntimeTestJwt.bearerForPlatformRole("ADMIN", List.of("ROLE_ADMIN")))

@@ -14,6 +14,17 @@ RUN mvn package -DskipTests -q
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM eclipse-temurin:21-jre-alpine AS runtime
 
+# Build identity for /actuator/info (KAN-195). The build context copies only src/ (no .git), so
+# git-commit-id produces no git.properties here — CI passes the real git metadata as build-args and
+# BuildIdentityResolver prefers them. service.version + build.timestamp come from build-info.properties
+# baked into the jar above. These are plain git facts, never secrets.
+ARG GIT_COMMIT=""
+ARG GIT_BRANCH=""
+ARG GIT_COMMIT_TIME=""
+ENV GIT_COMMIT=${GIT_COMMIT} \
+    GIT_BRANCH=${GIT_BRANCH} \
+    GIT_COMMIT_TIME=${GIT_COMMIT_TIME}
+
 RUN addgroup -S spring && adduser -S spring -G spring
 USER spring
 WORKDIR /app
