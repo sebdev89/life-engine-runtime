@@ -81,6 +81,15 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # Expose the published artifact's identity (KAN-200 / T9) so the deploy can consume it from the
+    # Actions API without resolving it by hand. Not secret — repository/tag/digest/revision are public
+    # facts of the pushed image.
+    outputs:
+      repository: ${{ steps.image-metadata.outputs.repository }}
+      tag: ${{ steps.image-metadata.outputs.tag }}
+      digest: ${{ steps.image-metadata.outputs.digest }}
+      revision: ${{ steps.image-metadata.outputs.revision }}
+      commit: ${{ steps.image-metadata.outputs.commit }}
 
     steps:
       - name: Checkout
@@ -108,6 +117,7 @@ jobs:
             type=sha,prefix=sha-
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -121,3 +131,34 @@ jobs:
             GIT_COMMIT_TIME=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # KAN-200 / T9: publish the digest of the image we just pushed. build-push-action reports the
+      # immutable digest in steps.build.outputs.digest — surface it as job outputs (Actions API /
+      # downstream jobs) and in the run summary (gh run view), so deploy-uat.sh can resolve
+      # commit -> digest straight from the run instead of querying GHCR by hand. No credentials here.
+      - name: Expose published image digest
+        id: image-metadata
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          short="${GITHUB_SHA:0:7}"
+          repository="ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}"
+          tag="sha-${short}"
+          {
+            echo "repository=${repository}"
+            echo "tag=${tag}"
+            echo "digest=${DIGEST}"
+            echo "revision=${GITHUB_SHA}"
+            echo "commit=${short}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## Published image"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| repository | \`${repository}\` |"
+            echo "| tag | \`${tag}\` |"
+            echo "| digest | \`${DIGEST}\` |"
+            echo "| oci.revision | \`${GITHUB_SHA}\` |"
+            echo "| commit | \`${short}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
