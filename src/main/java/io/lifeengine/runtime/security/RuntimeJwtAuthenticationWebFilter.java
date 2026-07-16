@@ -122,7 +122,11 @@ public class RuntimeJwtAuthenticationWebFilter implements WebFilter {
         String path = exchange.getRequest().getPath().value();
         return path.startsWith("/actuator/health")
                 || path.equals("/api/runtime/health")
-                || path.equals("/actuator/prometheus");
+                || path.equals("/actuator/prometheus")
+                // KAN-195: build identity, scraped from inside the Docker network with no Authorization
+                // header (nginx blocks it externally). SecurityConfig lists it permitAll, but that governs
+                // authorization only — this pre-Security filter must skip it too, like the other reads.
+                || path.startsWith("/actuator/info");
     }
 
     /**

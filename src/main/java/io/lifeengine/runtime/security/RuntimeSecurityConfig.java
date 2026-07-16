@@ -49,6 +49,12 @@ public class RuntimeSecurityConfig {
                                         .permitAll()
                                         .pathMatchers(HttpMethod.GET, "/actuator/prometheus")
                                         .permitAll()
+                                        // Build identity (KAN-195). Internal-network readable like the other
+                                        // scrape endpoints; nginx keeps /actuator/info blocked externally
+                                        // (LIFE-OPS-02 §2.2). Must come before the /actuator/** ADMIN rule.
+                                        // Carries no secrets.
+                                        .pathMatchers(HttpMethod.GET, "/actuator/info")
+                                        .permitAll()
                                         .pathMatchers(HttpMethod.GET, "/actuator/metrics/**")
                                         .hasAuthority(RuntimeAuthorities.ADMIN)
                                         .pathMatchers(HttpMethod.GET, "/actuator/**")
