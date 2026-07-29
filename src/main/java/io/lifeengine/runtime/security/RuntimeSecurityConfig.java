@@ -14,7 +14,13 @@ import reactor.core.publisher.Mono;
 
 @Configuration
 @EnableWebFluxSecurity
-@EnableConfigurationProperties({RuntimeSecurityProperties.class, RuntimeJwtProperties.class, RuntimeJwksProperties.class})
+@EnableConfigurationProperties({
+    RuntimeSecurityProperties.class,
+    RuntimeJwtProperties.class,
+    RuntimeJwksProperties.class,
+    // KAN-173: contrato de los tokens service-to-service.
+    ServiceTokenProperties.class
+})
 public class RuntimeSecurityConfig {
 
     @Bean

@@ -85,6 +85,24 @@ lifeengine:
       derive-runtime-authorities-from-role: ${RUNTIME_DERIVE_AUTHORITIES_FROM_ROLE:true}
       jwks:
         uri: ${AUTH_JWKS_URI:}
+      # KAN-173 — contrato exigido a los tokens service-to-service.
+      #
+      # El issuer NO tiene default: sin AUTH_S2S_ISSUER configurado, ServiceTokenGuard rechaza
+      # todos los tokens de servicio. Es preferible que los flujos S2S fallen a que acepten
+      # cualquier issuer porque alguien olvidó una variable — un token del Auth de UAT no debe
+      # servir en prod aunque la firma sea válida.
+      #
+      # La audiencia es fija por servicio, no configurable por ambiente: `runtime` ES este
+      # servicio. Un token emitido para RAG se rechaza acá aunque venga del mismo Auth.
+      service-tokens:
+        expected-issuer: ${AUTH_S2S_ISSUER:}
+        expected-audience: runtime
+        allowed-subjects: ${RUNTIME_S2S_ALLOWED_SUBJECTS:service:business-chat}
+        allowed-client-ids: ${RUNTIME_S2S_ALLOWED_CLIENT_IDS:business-chat}
+        # Business Chat llama /api/runtime/** (arrancar runs, agregar eventos), que exige
+        # OPERATOR. No se le da ADMIN: habilita operaciones que nunca necesita, y darla "por
+        # las dudas" convierte un compromiso de Business Chat en control total del Runtime.
+        required-authority: ${RUNTIME_S2S_REQUIRED_AUTHORITY:RUNTIME_OPERATOR}
   security:
     jwt:
       # Local default MUST match life-engine-auth/src/main/resources/application-local.yml so

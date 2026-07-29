@@ -11,6 +11,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @SpringBootApplication(scanBasePackages = "io.lifeengine.runtime")
 @EnableConfigurationProperties({
     RuntimeSecurityProperties.class,
+    io.lifeengine.runtime.security.ServiceTokenProperties.class,
     RuntimeJwtProperties.class,
     RuntimeJwksProperties.class,
     RuntimeLlmProperties.class
