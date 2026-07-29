@@ -14,7 +14,11 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * servicio si el issuer esperado está sin configurar: es preferible que los flujos S2S fallen a que
  * acepten cualquier issuer porque alguien olvidó una variable.
  */
-@ConfigurationProperties(prefix = "lifeengine.security.service-tokens")
+// El prefijo tiene que coincidir con dónde vive el bloque en application.yml. Estaba en
+// "lifeengine.security.service-tokens" mientras el YAML lo declaraba bajo
+// lifeengine.runtime.security: las properties no bindeaban, expectedIssuer quedaba vacío, y
+// TODOS los tokens de servicio se rechazaban con s2s_issuer_not_configured (KAN-173).
+@ConfigurationProperties(prefix = "lifeengine.runtime.security.service-tokens")
 public record ServiceTokenProperties(
         /**
          * Issuer exigido en el claim {@code iss}. Vacío = ningún token de servicio se acepta.
