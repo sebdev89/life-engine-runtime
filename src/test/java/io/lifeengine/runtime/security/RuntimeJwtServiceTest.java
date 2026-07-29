@@ -13,19 +13,32 @@ import org.junit.jupiter.api.Test;
 
 class RuntimeJwtServiceTest {
 
+    /**
+     * Guard con la configuración por defecto de Runtime (KAN-173). Estos tests cubren el camino de
+     * los tokens de USUARIO; el contrato S2S tiene su propia suite en ServiceTokenGuardTest.
+     */
+    private static ServiceTokenGuard defaultServiceTokenGuard() {
+        return new ServiceTokenGuard(new ServiceTokenProperties(
+                "life-engine-auth",
+                "runtime",
+                java.util.List.of("service:business-chat"),
+                java.util.List.of("business-chat"),
+                "RUNTIME_OPERATOR"));
+    }
+
     private static final RuntimeSecurityProperties SECURITY_PROPS = new RuntimeSecurityProperties(true, true);
 
     @Test
     void rejectsShortOrMissingSecret_whenJwksNotConfigured() {
         JwksPublicKeyProvider unconfigured = new JwksPublicKeyProvider(new RuntimeJwksProperties(""), new ObjectMapper());
 
-        assertThatThrownBy(() -> new RuntimeJwtService(new RuntimeJwtProperties(""), SECURITY_PROPS, unconfigured))
+        assertThatThrownBy(() -> new RuntimeJwtService(new RuntimeJwtProperties(""), SECURITY_PROPS, unconfigured, defaultServiceTokenGuard()))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("32 UTF-8 bytes");
 
         assertThatThrownBy(
                         () -> new RuntimeJwtService(
-                                new RuntimeJwtProperties("too-short"), SECURITY_PROPS, unconfigured))
+                                new RuntimeJwtProperties("too-short"), SECURITY_PROPS, unconfigured, defaultServiceTokenGuard()))
                 .isInstanceOf(IllegalStateException.class);
     }
 
@@ -37,7 +50,7 @@ class RuntimeJwtServiceTest {
                 new JwksPublicKeyProvider(
                         new RuntimeJwksProperties("http://auth:8081/.well-known/jwks.json"), new ObjectMapper());
 
-        assertThatCode(() -> new RuntimeJwtService(new RuntimeJwtProperties(""), SECURITY_PROPS, configured))
+        assertThatCode(() -> new RuntimeJwtService(new RuntimeJwtProperties(""), SECURITY_PROPS, configured, defaultServiceTokenGuard()))
                 .doesNotThrowAnyException();
     }
 
@@ -49,7 +62,7 @@ class RuntimeJwtServiceTest {
         JwksPublicKeyProvider configured =
                 new JwksPublicKeyProvider(
                         new RuntimeJwksProperties("http://auth:8081/.well-known/jwks.json"), new ObjectMapper());
-        var service = new RuntimeJwtService(new RuntimeJwtProperties(""), SECURITY_PROPS, configured);
+        var service = new RuntimeJwtService(new RuntimeJwtProperties(""), SECURITY_PROPS, configured, defaultServiceTokenGuard());
 
         // Forge an HS256 token the way an attacker who read the old dummy-key source would.
         String forged =
@@ -75,7 +88,7 @@ class RuntimeJwtServiceTest {
         String validSecret = "a-perfectly-valid-32-plus-byte-secret!!";
 
         assertThatCode(
-                        () -> new RuntimeJwtService(new RuntimeJwtProperties(validSecret), SECURITY_PROPS, unconfigured))
+                        () -> new RuntimeJwtService(new RuntimeJwtProperties(validSecret), SECURITY_PROPS, unconfigured, defaultServiceTokenGuard()))
                 .doesNotThrowAnyException();
     }
 }

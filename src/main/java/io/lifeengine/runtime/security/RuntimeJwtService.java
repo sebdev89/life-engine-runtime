@@ -32,11 +32,15 @@ public class RuntimeJwtService {
     private final SecretKey key;
     private final RuntimeSecurityProperties securityProperties;
     private final JwksPublicKeyProvider jwksKeyProvider;
+    /** KAN-173: contrato de los tokens service-to-service. */
+    private final ServiceTokenGuard serviceTokenGuard;
 
     public RuntimeJwtService(
             RuntimeJwtProperties props,
             RuntimeSecurityProperties securityProperties,
-            JwksPublicKeyProvider jwksKeyProvider) {
+            JwksPublicKeyProvider jwksKeyProvider,
+            ServiceTokenGuard serviceTokenGuard) {
+        this.serviceTokenGuard = serviceTokenGuard;
         String secret = props.secret() == null ? "" : props.secret();
         byte[] bytes = secret.getBytes(StandardCharsets.UTF_8);
         if (bytes.length < 32) {
@@ -96,6 +100,22 @@ public class RuntimeJwtService {
                 // HS256 disabled (see constructor) and this isn't a verifiable RS256 token.
                 return ParseOutcome.failed("hs256_disabled");
             }
+            // KAN-173 — bifurcación entre dos contratos distintos.
+            //
+            // Tiene que ir ANTES del UUID.fromString de abajo: el sub de un token de servicio es
+            // "service:business-chat", que no es un UUID y haría explotar el parseo. Pero el motivo
+            // real de que esté acá es otro — un token de servicio no debe recorrer nunca el camino
+            // de los tokens de usuario, ni siquiera para fallar.
+            if (ServiceTokenGuard.isServiceToken(claims)) {
+                var rejection = serviceTokenGuard.validate(claims, alg, peekKid(rawToken));
+                if (rejection.isPresent()) {
+                    // Se devuelve el motivo, nunca el token. Un token en un log es una credencial
+                    // en un log, y estos duran 5 minutos: más que suficiente para reusarlo.
+                    return ParseOutcome.failed(rejection.get());
+                }
+                return ParseOutcome.ok(ServiceTokenGuard.toPrincipal(claims));
+            }
+
             UUID userId = UUID.fromString(claims.getSubject());
             String email = claims.get("email", String.class);
             String role = claims.get("role", String.class);
