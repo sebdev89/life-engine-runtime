@@ -122,6 +122,10 @@ runtime:
     # Pair with the lean marketContext projection in LoadCryptoMarketContextAgent so the
     # analyst stage stays comfortably under the 2048-token ceiling.
     max-tokens: 192
+    # Los diez agentes que llaman al LLM parsean con StrictAgentJson; ninguno consume prosa.
+    # Pedírselo al proveedor en vez de sólo al prompt es lo que todos ya exigen. Vaciar la
+    # variable (o ponerla en `none`) vuelve al comportamiento anterior.
+    response-format: ${RUNTIME_LLM_RESPONSE_FORMAT:json_object}
     temperature: 0
 
 # Build identity overrides. Empty by default: local and CI builds carry a .git directory, so git.properties

@@ -1,6 +1,7 @@
 package io.lifeengine.runtime.llm;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -113,7 +114,11 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         List<ChatMessage> chatMessages =
                 messages.stream().map(m -> new ChatMessage(m.role(), m.content())).toList();
         return new ChatCompletionRequest(
-                model, chatMessages, properties.maxTokens(), properties.temperature());
+                model,
+                chatMessages,
+                properties.maxTokens(),
+                properties.temperature(),
+                properties.responseFormatOrNull());
     }
 
     private String toRequestJson(ChatCompletionRequest body) {
@@ -203,7 +208,12 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
             String model,
             List<ChatMessage> messages,
             @JsonProperty("max_tokens") int maxTokens,
-            double temperature) {}
+            double temperature,
+            // NON_NULL: cuando el formato está desactivado el campo no viaja. Mandar
+            // `"response_format": null` no es lo mismo que no mandarlo — hay proveedores que
+            // lo rechazan.
+            @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("response_format")
+                    RuntimeLlmProperties.ResponseFormat responseFormat) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     record ChatMessage(String role, String content) {}
