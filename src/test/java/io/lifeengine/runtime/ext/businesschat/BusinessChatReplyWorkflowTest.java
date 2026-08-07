@@ -59,6 +59,8 @@ class BusinessChatReplyWorkflowTest {
         registry.add("runtime.llm.base-url", () -> mockLlm.url("/").toString().replaceAll("/$", ""));
         registry.add("runtime.llm.model", () -> "test-model");
         registry.add("runtime.llm.api-key", () -> "test-key");
+        registry.add("runtime.llm.roles.chat.base-url", () -> mockLlm.url("/").toString().replaceAll("/$", ""));
+        registry.add("runtime.llm.roles.fast.base-url", () -> mockLlm.url("/").toString().replaceAll("/$", ""));
     }
 
     @Test

@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
@@ -30,7 +31,7 @@ public class SummarizerAgent implements AgentExecutor {
 
     private final LlmClient llmClient;
 
-    public SummarizerAgent(LlmClient llmClient) {
+    public SummarizerAgent(@Qualifier("fastLlmClient") LlmClient llmClient) {
         this.llmClient = llmClient;
     }
 

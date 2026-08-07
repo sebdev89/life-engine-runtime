@@ -40,3 +40,20 @@ runtime:
     timeout: 5s
     max-tokens: 256
     temperature: 0
+    # Los roles se pinean acá A PROPÓSITO, aunque parezca redundante con `base-url` de arriba.
+    #
+    # `application-test.yml` NO reemplaza a `application.yml`: Spring fusiona clave por clave. Sin
+    # este bloque, `runtime.llm.roles` sobrevive con los defaults de producción — que apuntan a
+    # Ollama en localhost:11434. Los agentes con rol `fast` o `chat` saldrían entonces contra un
+    # Ollama real en vez del MockWebServer, y los tests fallarían o —peor— pasarían por accidente
+    # en una máquina que casualmente tiene Ollama levantado.
+    #
+    # Cada test de integración además repunta estos base-url a su MockWebServer, que escucha en un
+    # puerto aleatorio y no se puede saber acá.
+    roles:
+      chat:
+        base-url: http://localhost:8000
+        model: test-model
+      fast:
+        base-url: http://localhost:8000
+        model: test-model

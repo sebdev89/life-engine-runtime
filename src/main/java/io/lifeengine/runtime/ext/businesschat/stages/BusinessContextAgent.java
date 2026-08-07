@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
@@ -47,7 +48,7 @@ public class BusinessContextAgent implements AgentExecutor {
     private final BusinessHandoffService handoffService;
 
     public BusinessContextAgent(
-            LlmClient llmClient,
+            @Qualifier("chatLlmClient") LlmClient llmClient,
             ObjectMapper mapper,
             PromptTemplateRegistry promptTemplateRegistry,
             BusinessKnowledgeService knowledgeService,
