@@ -140,6 +140,17 @@ runtime:
       fast:
         base-url: ${RUNTIME_LLM_FAST_BASE_URL:http://localhost:11434}
         model: ${RUNTIME_LLM_FAST_MODEL:gemma3:4b}
+        # El default global es 192 tokens, dimensionado para JSON de tres campos. La salida de
+        # `email.triage.v1` lleva además `summary` y `suggestedAction` en prosa: con 192 el JSON se
+        # corta a la mitad y el parseo estricto lo rechaza, o sea que el correo nunca se clasifica.
+        #
+        # Se sube el techo del ROL, no el default global. Hoy el rol `fast` sólo lo consumen
+        # ClassifierAgent y SummarizerAgent, que están cableados únicamente en los workflows demo;
+        # ninguno de los dos se ve afectado por tener más margen del que usa.
+        #
+        # gemma3:4b no es un modelo "thinking", así que acá no aplica el consumo de presupuesto en
+        # razonamiento que causó KAN-156 con qwen3:14b en el rol `chat`.
+        max-tokens: ${RUNTIME_LLM_FAST_MAX_TOKENS:600}
 
 # Build identity overrides. Empty by default: local and CI builds carry a .git directory, so git.properties
 # (git-commit-id) is the source. The Docker image has no .git — CI passes these as build-args → env, and
