@@ -15,6 +15,20 @@ public record RuntimeLlmProperties(
         LlmRetryConfig retry,
         String responseFormat) {
 
+    /**
+     * Techo de generación por default. Es un LÍMITE, no una reserva: se paga sólo lo que el modelo
+     * genera. El fundamento y la evidencia medida están en {@code application.yml}, junto al
+     * default del YAML — este es el mismo número y tiene que seguir siéndolo.
+     */
+    public static final int DEFAULT_MAX_TOKENS = 2048;
+
+    /**
+     * Piso por debajo del cual {@code business-chat.reply.v1} está demostrado que rompe contra el
+     * modelo del rol chat. Lo usa {@code LlmMaxTokensPolicyTest} para que bajar el default sea un
+     * test rojo y no una incidencia en producción.
+     */
+    public static final int MIN_SAFE_MAX_TOKENS = 1024;
+
     @ConstructorBinding
     public RuntimeLlmProperties {
         if (baseUrl == null || baseUrl.isBlank()) {
@@ -30,7 +44,12 @@ public record RuntimeLlmProperties(
             timeout = Duration.ofSeconds(30);
         }
         if (maxTokens <= 0) {
-            maxTokens = 256;
+            // Mismo valor que el default del YAML, y por la misma razón (ver application.yml).
+            // Esta rama es la capa MÁS profunda: la pisa quien configure 0 o un negativo, o quien
+            // construya las properties a mano. Dejarla en 256 significaba que un error de
+            // configuración aterrizaba en un valor con el que business-chat.reply.v1 no funciona
+            // contra qwen3:14b. Un fallback tiene que caer en algo que ande.
+            maxTokens = DEFAULT_MAX_TOKENS;
         }
         if (retry == null) {
             // Conservative default: retry transient transport/provider failures up to twice with

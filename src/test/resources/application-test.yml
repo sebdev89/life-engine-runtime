@@ -38,7 +38,9 @@ runtime:
     model: test-model
     api-key: test-key
     timeout: 5s
-    max-tokens: 256
+    # max-tokens NO se declara acá a propósito: los tests corren sobre el default que se envía en
+    # application.yml. Contra un MockWebServer el valor es indiferente para el resultado, así que
+    # pinearlo sólo servía para tener un número más que se puede desincronizar del real.
     temperature: 0
     # Los roles se pinean acá A PROPÓSITO, aunque parezca redundante con `base-url` de arriba.
     #

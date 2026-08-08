@@ -116,12 +116,33 @@ runtime:
     model: Qwen/Qwen2.5-Coder-3B-Instruct
     api-key: local-dev
     timeout: 30s
-    # Sized for vLLM running with --max-model-len=2048. The crypto market-review
-    # JSON outputs (bias/setup/invalidations, approved/warnings/riskLevel, response)
-    # all fit well under 100 tokens; 192 leaves margin without ever truncating mid-JSON.
-    # Pair with the lean marketContext projection in LoadCryptoMarketContextAgent so the
-    # analyst stage stays comfortably under the 2048-token ceiling.
-    max-tokens: 192
+    # Techo de generación. Es un LÍMITE, no una reserva: se paga sólo lo que el modelo
+    # realmente genera, así que subirlo no cuesta latencia ni memoria en el camino normal.
+    #
+    # El 192 anterior estaba dimensionado para un vLLM con qwen2.5-coder-3b que ya no corre en
+    # ningún ambiente. Contra el modelo del rol chat de hoy (qwen3:14b) rompía
+    # business-chat.reply.v1 en el 100% de los casos: el modelo se va en un bloque de
+    # razonamiento, choca contra el techo y devuelve contenido vacío. El agente muere con
+    # `empty LLM response` y el visitante lee "tuve un problema técnico". El modo json_object
+    # de KAN-B1 NO alcanza para evitarlo — se verificó con el response-format activo.
+    #
+    # Medido contra Ollama, tres mensajes distintos por corrida (precio, multi-pregunta, handoff):
+    #
+    #    192   business-chat  0/3 OK   completion_tokens == 192, clavado en el techo
+    #    512   business-chat  1/3 OK   completion_tokens == 512, clavado en el techo
+    #   1024   business-chat  6/6 OK   máximo real observado: 151
+    #   2048   business-chat  9/9 OK   máximo real observado: 104
+    #   4096   business-chat  3/3 OK   máximo real observado: 101
+    #
+    # En 21 llamadas exitosas ninguna pasó de 151 tokens: el techo no lo fija la demanda real
+    # sino el caso patológico de razonamiento desbocado. Por eso NO se elige el mínimo que pasa
+    # (1024): la frontera es probabilística —512 se desbocó donde 1024 no— y no hay razón de
+    # principio para creer que 1024 esté a salvo.
+    #
+    # 2048 es además el valor efectivo que YA corre en prod y UAT vía .env desde hace semanas.
+    # Ponerlo acá de default no cambia ningún ambiente desplegado: alinea el default con lo
+    # único que tiene evidencia de campo y elimina las capas intermedias que no la tienen.
+    max-tokens: ${RUNTIME_LLM_MAX_TOKENS:2048}
     # Los diez agentes que llaman al LLM parsean con StrictAgentJson; ninguno consume prosa.
     # Pedírselo al proveedor en vez de sólo al prompt es lo que todos ya exigen. Vaciar la
     # variable (o ponerla en `none`) vuelve al comportamiento anterior.
