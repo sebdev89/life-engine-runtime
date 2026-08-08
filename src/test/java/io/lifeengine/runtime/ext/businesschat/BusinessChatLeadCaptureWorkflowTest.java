@@ -55,6 +55,11 @@ class BusinessChatLeadCaptureWorkflowTest {
         registry.add("runtime.llm.base-url", () -> mockLlm.url("/").toString().replaceAll("/$", ""));
         registry.add("runtime.llm.model", () -> "test-model");
         registry.add("runtime.llm.api-key", () -> "test-key");
+        // Los clientes por rol tienen su propio base-url y NO lo heredan una vez que
+        // `runtime.llm.roles` está declarado (application-test.yml lo pinea). Sin estas dos
+        // líneas, lead-capture —que usa el rol chat— saldría contra localhost:8000 en vez del mock.
+        registry.add("runtime.llm.roles.chat.base-url", () -> mockLlm.url("/").toString().replaceAll("/$", ""));
+        registry.add("runtime.llm.roles.fast.base-url", () -> mockLlm.url("/").toString().replaceAll("/$", ""));
     }
 
     @Test

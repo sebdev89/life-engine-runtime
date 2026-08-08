@@ -127,6 +127,19 @@ runtime:
     # variable (o ponerla en `none`) vuelve al comportamiento anterior.
     response-format: ${RUNTIME_LLM_RESPONSE_FORMAT:json_object}
     temperature: 0
+    # Endpoints por rol (ADR-ML-001 fase 1). Todo campo que no se declare acá hereda de
+    # `runtime.llm` de arriba — la precedencia es rol > default, sin excepciones.
+    #
+    # Los defaults apuntan a Ollama y NO a `runtime.llm.base-url`: el default global sigue
+    # apuntando a vLLM :8000 por compatibilidad, y cambiarlo es otro frente. Un rol sin
+    # variables de entorno seteadas queda igual que antes de este cambio en todo lo demás.
+    roles:
+      chat:
+        base-url: ${RUNTIME_LLM_CHAT_BASE_URL:http://localhost:11434}
+        model: ${RUNTIME_LLM_CHAT_MODEL:gemma3:4b}
+      fast:
+        base-url: ${RUNTIME_LLM_FAST_BASE_URL:http://localhost:11434}
+        model: ${RUNTIME_LLM_FAST_MODEL:gemma3:4b}
 
 # Build identity overrides. Empty by default: local and CI builds carry a .git directory, so git.properties
 # (git-commit-id) is the source. The Docker image has no .git — CI passes these as build-args → env, and

@@ -21,6 +21,7 @@ import io.lifeengine.runtime.workflow.WorkflowRunContext;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
@@ -43,7 +44,7 @@ public class BusinessReplyAgent implements AgentExecutor {
     private final BusinessConversationContext conversationContext;
 
     public BusinessReplyAgent(
-            LlmClient llmClient,
+            @Qualifier("chatLlmClient") LlmClient llmClient,
             ObjectMapper mapper,
             PromptTemplateRegistry promptTemplateRegistry,
             BusinessConversationContext conversationContext) {
