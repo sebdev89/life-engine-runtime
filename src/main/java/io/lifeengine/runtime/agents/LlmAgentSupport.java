@@ -106,7 +106,7 @@ public final class LlmAgentSupport {
                                             started,
                                             finished,
                                             latencyMs,
-                                            Map.of()));
+                                            roleMetadata(llmClient)));
                         })
                 .onErrorResume(
                         error -> {
@@ -134,7 +134,7 @@ public final class LlmAgentSupport {
                                                 started,
                                                 finished,
                                                 latencyMs,
-                                                Map.of()));
+                                                roleMetadata(llmClient)));
                                 log.error(
                                         "LLM_CALL_FAILED agent={} runId={} workflowId={} status={} endpoint={}",
                                         agentId,
@@ -164,10 +164,25 @@ public final class LlmAgentSupport {
                                                 started,
                                                 finished,
                                                 latencyMs,
-                                                Map.of()));
+                                                roleMetadata(llmClient)));
                             }
                             return Mono.error(error);
                         });
+    }
+
+    /**
+     * Rol de Multi-Model V2 que atendió la llamada, para el detalle del run y el cockpit.
+     *
+     * <p>Va en {@code metadata} y no como componente nuevo del record: {@link LlmCallRecord} ya
+     * persiste ese mapa, así que agregar la clave no toca el esquema de la base.
+     *
+     * <p>Se registra también en los caminos de error. Un fallo sin rol obliga a adivinar si el
+     * agente salió por el proveedor que le corresponde o por el {@code @Primary} — que es
+     * justamente lo que hay que saber cuando algo falla.
+     */
+    private static Map<String, String> roleMetadata(LlmClient llmClient) {
+        String role = llmClient.role();
+        return role == null || role.isBlank() ? Map.of() : Map.of("modelRole", role);
     }
 
     private static Retry buildRetrySpec(

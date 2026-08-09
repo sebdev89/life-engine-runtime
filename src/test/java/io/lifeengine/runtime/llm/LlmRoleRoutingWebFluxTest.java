@@ -197,6 +197,56 @@ class LlmRoleRoutingWebFluxTest {
         Assertions.assertThat(chatLlmClient).isNotSameAs(fastLlmClient);
     }
 
+    /**
+     * Cada cliente se identifica con su rol. Es lo que el cockpit muestra junto al modelo: ver
+     * "gemma3:4b" no dice si el agente pidió el rol rápido o si su {@code @Qualifier} se cayó y
+     * terminó en el {@code @Primary}. Los dos casos se ven iguales en pantalla y sólo uno está bien.
+     */
+    @Test
+    void eachClientReportsItsRole() {
+        Assertions.assertThat(primaryLlmClient.role()).isEqualTo("default");
+        Assertions.assertThat(chatLlmClient.role()).isEqualTo("chat");
+        Assertions.assertThat(fastLlmClient.role()).isEqualTo("fast");
+    }
+
+    /** El rol llega al detalle del run, que es de donde lo lee la UI. */
+    @Test
+    void runDetail_carriesTheRoleThatServedEachLlmCall() throws Exception {
+        enqueue(mockFast, """
+                {"incident":"x","affectedResource":"y","requestedAction":"z"}
+                """);
+        enqueue(mockFast, """
+                {"category":"INFO","reason":"n/a"}
+                """);
+
+        UUID runId =
+                startRun(
+                        """
+                        {"workflowId":"demo.llm.workflow","input":"rol en el detalle del run"}
+                        """);
+        awaitTerminal(runId, RunStatus.SUCCEEDED);
+        modelsReceivedBy(mockFast, 2);
+
+        String detail =
+                webTestClient
+                        .get()
+                        .uri("/api/runtime/runs/{runId}", runId)
+                        .exchange()
+                        .expectStatus()
+                        .isOk()
+                        .expectBody(String.class)
+                        .returnResult()
+                        .getResponseBody();
+
+        JsonNode calls = JSON.readTree(detail).path("llmCalls");
+        Assertions.assertThat(calls).isNotEmpty();
+        for (JsonNode call : calls) {
+            Assertions.assertThat(call.path("metadata").path("modelRole").asText())
+                    .as("toda llamada del workflow demo.llm sale por el rol fast")
+                    .isEqualTo("fast");
+        }
+    }
+
     /** Los roles no declaran retry ni response-format, así que los heredan del default. */
     @Test
     void rolesInheritRetryAndResponseFormatFromDefaults() throws Exception {

@@ -24,4 +24,16 @@ public interface LlmClient {
     default LlmRetryConfig retryConfig() {
         return LlmRetryConfig.DISABLED;
     }
+
+    /**
+     * Rol de Multi-Model V2 que sirvió la llamada — {@code chat}, {@code fast} o {@code default}.
+     *
+     * <p>Sin esto, el cockpit puede mostrar QUÉ modelo respondió pero no POR QUÉ ése: ver
+     * "gemma3:4b" no dice si el agente pidió el rol rápido o si su {@code @Qualifier} se cayó y
+     * terminó en el cliente {@code @Primary}. Los dos casos se ven idénticos en pantalla y sólo
+     * uno está bien.
+     */
+    default String role() {
+        return "default";
+    }
 }
