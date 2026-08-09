@@ -35,7 +35,7 @@ public class LlmWebClientConfiguration {
     @Primary
     LlmClient defaultLlmClient(
             WebClient llmWebClient, RuntimeLlmProperties properties, RuntimeMetrics metrics) {
-        return new OpenAiCompatibleLlmClient(llmWebClient, properties, metrics);
+        return new OpenAiCompatibleLlmClient(llmWebClient, properties, metrics, "default");
     }
 
     /** Rol conversacional — lo inyectan los agentes de business-chat con {@code @Qualifier}. */
@@ -43,7 +43,7 @@ public class LlmWebClientConfiguration {
     LlmClient chatLlmClient(
             RuntimeLlmProperties defaults, RuntimeLlmRolesProperties roles, RuntimeMetrics metrics) {
         RuntimeLlmProperties effective = roles.chatOrEmpty().merge(defaults);
-        return new OpenAiCompatibleLlmClient(buildWebClient(effective), effective, metrics);
+        return new OpenAiCompatibleLlmClient(buildWebClient(effective), effective, metrics, "chat");
     }
 
     /** Rol de clasificación/extracción — latencia sobre prosa. */
@@ -51,7 +51,7 @@ public class LlmWebClientConfiguration {
     LlmClient fastLlmClient(
             RuntimeLlmProperties defaults, RuntimeLlmRolesProperties roles, RuntimeMetrics metrics) {
         RuntimeLlmProperties effective = roles.fastOrEmpty().merge(defaults);
-        return new OpenAiCompatibleLlmClient(buildWebClient(effective), effective, metrics);
+        return new OpenAiCompatibleLlmClient(buildWebClient(effective), effective, metrics, "fast");
     }
 
     private static WebClient buildWebClient(RuntimeLlmProperties properties) {

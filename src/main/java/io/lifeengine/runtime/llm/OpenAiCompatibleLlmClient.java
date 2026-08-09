@@ -32,12 +32,28 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     private final WebClient webClient;
     private final RuntimeLlmProperties properties;
     private final RuntimeMetrics metrics;
+    private final String role;
 
     public OpenAiCompatibleLlmClient(
-            WebClient llmWebClient, RuntimeLlmProperties properties, RuntimeMetrics metrics) {
+            WebClient llmWebClient,
+            RuntimeLlmProperties properties,
+            RuntimeMetrics metrics,
+            String role) {
         this.webClient = llmWebClient;
         this.properties = properties;
         this.metrics = metrics;
+        this.role = role == null || role.isBlank() ? "default" : role.trim();
+    }
+
+    /** Constructor de conveniencia para los tests anteriores al rol. */
+    public OpenAiCompatibleLlmClient(
+            WebClient llmWebClient, RuntimeLlmProperties properties, RuntimeMetrics metrics) {
+        this(llmWebClient, properties, metrics, "default");
+    }
+
+    @Override
+    public String role() {
+        return role;
     }
 
     public Mono<Boolean> health() {
