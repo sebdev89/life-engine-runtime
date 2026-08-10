@@ -65,6 +65,26 @@ public class WorkflowRouter {
         return "definition";
     }
 
+    /**
+     * Etiqueta del executor que atendería este workflow, SIN arrancarlo.
+     *
+     * <p>Existe para que RunService pueda meterla en la metadata antes de la única escritura
+     * transaccional. Antes se escribía el estado otra vez DESPUÉS de lanzar el workflow, y esa
+     * escritura podía pisar un estado terminal ya alcanzado y devolverlo a RUNNING sin ningún
+     * evento que lo justificara.
+     *
+     * <p>Valida el workflowId como efecto deseado: así un id inexistente falla ANTES de escribir
+     * nada en el log, en vez de dejar un run que arrancó y nunca termina.
+     */
+    public String resolveExecutorLabel(String workflowId) {
+        if (WorkflowIds.DEMO_NO_LLM.equals(workflowId)) {
+            workflowRegistry.require(workflowId);
+            return "fake";
+        }
+        workflowRegistry.require(workflowId);
+        return WorkflowIds.DEMO_LLM.equals(workflowId) ? "llm" : "definition";
+    }
+
     public boolean requestCancel(String workflowId, UUID runId) {
         if (WorkflowIds.DEMO_NO_LLM.equals(workflowId)) {
             return fakeWorkflowExecutor.requestCancel(runId);

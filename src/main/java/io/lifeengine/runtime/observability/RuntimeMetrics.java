@@ -70,7 +70,7 @@ public class RuntimeMetrics {
         Counter.builder("runtime.sse.streams").register(registry).increment();
     }
 
-    // ── Runtime V3 F1 — SPEC-004 §6ter ────────────────────────────────────────────────────
+    // ── Runtime V3 F1 — SPEC-009 §6ter ────────────────────────────────────────────────────
     // Ninguna lleva runId, tenant ni ids: `workflowId` está acotado por los workflows
     // registrados y `outcome` por sus tres valores. Con etiquetas de alta cardinalidad, estas
     // series harían explotar Prometheus en vez de explicar nada.

@@ -3,7 +3,7 @@ package io.lifeengine.runtime.domain;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 /**
- * Orden de un evento dentro del log — value object congelado en SPEC-004 §2bis.
+ * Orden de un evento dentro del log — value object congelado en SPEC-009 §2bis.
  *
  * <p>Existe por una invariante, no por ceremonia: el 0 significa "todavía no pasó por el log" y
  * NUNCA es un lugar válido en el orden. Con un {@code long} suelto esa distinción vive en la

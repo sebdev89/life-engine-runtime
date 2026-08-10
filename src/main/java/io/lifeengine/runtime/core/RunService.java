@@ -78,6 +78,12 @@ public class RunService {
                             String input = request.input().trim();
                             Map<String, Object> metadata = new HashMap<>(request.metadata());
                             metadata.put("input", input);
+                            // El executor se resuelve ANTES de construir el Run: `Run` copia el
+                            // mapa al construirse, así que mutarlo después no lo cambia. Y validar
+                            // acá hace que un workflowId inexistente falle sin dejar rastro en el
+                            // log, en vez de dejar un run que arrancó y nunca termina.
+                            String executor = workflowRouter.resolveExecutorLabel(workflowId);
+                            metadata.put("executor", executor);
 
                             Run run =
                                     new Run(
@@ -90,17 +96,17 @@ public class RunService {
                                             null,
                                             null,
                                             metadata);
-                            // La fila del run se crea primero y SIN evento, y no es una excepción a
-                            // ADR-RT-003: `runtime_event.run_id` referencia a `runtime_run(id)`, así
-                            // que un evento previo a la creación es físicamente imposible. La
-                            // invariante gobierna las TRANSICIONES, no el alta.
+                            // El alta va sin evento y no es excepción a ADR-RT-003:
+                            // `runtime_event.run_id` referencia a `runtime_run(id)`, así que un
+                            // evento previo a la creación es físicamente imposible. La invariante
+                            // gobierna las TRANSICIONES, no el alta.
                             store.saveRun(run);
 
-                            // QUEUED → RUNNING sí es una transición, y va con su evento en una sola
-                            // transacción. Antes se guardaba RUNNING acá y el RUN_STARTED lo emitía
-                            // después el executor, fuera de transacción: si el proceso moría en el
-                            // medio quedaba un run RUNNING con cero filas en el log — exactamente el
-                            // caso que motivó esta fase.
+                            // QUEUED → RUNNING con su evento, en una sola transacción. No hay
+                            // ningún saveRun después de lanzar el workflow: esa escritura podía
+                            // pisar un estado terminal ya alcanzado —un agente inexistente falla
+                            // apenas se suscribe— y devolverlo a RUNNING sin evento que lo
+                            // explicara, falsificando la invariante I4.
                             Run running = run.withStatus(RunStatus.RUNNING, Instant.now()).withStartedAt(now);
                             RuntimeEvent startedEvent =
                                     RuntimeEvent.of(
@@ -110,20 +116,7 @@ public class RunService {
                                             false);
                             eventPublisher.publish(store.appendEventAndSaveRun(startedEvent, running));
 
-                            String executor =
-                                    workflowRouter.start(workflowId, runId, input, correlationId, caller);
-                            metadata.put("executor", executor);
-                            store.saveRun(
-                                    new Run(
-                                            running.id(),
-                                            running.status(),
-                                            running.workflowId(),
-                                            running.correlationId(),
-                                            running.createdAt(),
-                                            running.updatedAt(),
-                                            running.startedAt(),
-                                            running.finishedAt(),
-                                            metadata));
+                            workflowRouter.start(workflowId, runId, input, correlationId, caller);
 
                             RunLogContext.put(correlationId, runId.toString(), workflowId);
                             try {

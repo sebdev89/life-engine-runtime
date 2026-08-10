@@ -158,7 +158,7 @@ public class RunEventStreamService {
             // Rezagado: su seq es menor al último emitido. Pasa cuando dos eventos se publican en
             // orden distinto al que el log les asignó (cancelRun publica desde el hilo HTTP
             // mientras el workflow emite desde boundedElastic). Se emite IGUAL —fuera de orden es
-            // mejor que perderlo— y se cuenta el hueco, que es lo que SPEC-004 §2ter exige.
+            // mejor que perderlo— y se cuenta el hueco, que es lo que SPEC-009 §2ter exige.
             metrics.recordStreamReorderGap();
             emit(event);
         }

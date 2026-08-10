@@ -11,7 +11,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 /**
- * Semántica de {@code Last-Event-ID}, congelada en SPEC-004 §2ter.
+ * Semántica de {@code Last-Event-ID}, congelada en SPEC-009 §2ter.
  *
  * <p>Un id no numérico es {@code 400 validation_failed}, no un replay silencioso. Eso incluye el
  * UUID que mandaría un cliente anterior a F1 — la spec no define compatibilidad para ese caso, y

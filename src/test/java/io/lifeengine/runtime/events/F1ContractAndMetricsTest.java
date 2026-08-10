@@ -102,7 +102,7 @@ class F1ContractAndMetricsTest {
 
     /**
      * Un evento vivo con {@code seq} menor al último emitido ya no se pierde: se emite fuera de
-     * orden y se cuenta el hueco, que es lo que SPEC-004 §2ter exige.
+     * orden y se cuenta el hueco, que es lo que SPEC-009 §2ter exige.
      */
     @Test
     void lateLiveEvent_isStillEmittedAndCountedAsGap() {

@@ -73,7 +73,7 @@ public class RuntimeRestController {
      * El navegador reenvía el último id recibido al reconectar. Desde ADR-RT-012 ese id es el
      * {@code seq}.
      *
-     * <p>Un id no numérico es {@code 400 validation_failed}, tal como SPEC-004 §2ter congela la
+     * <p>Un id no numérico es {@code 400 validation_failed}, tal como SPEC-009 §2ter congela la
      * semántica de error. Eso incluye el UUID que mandaría un cliente anterior a F1: la spec no
      * define compatibilidad para ese caso, y tragárselo devolviendo el run entero sería cambiar en
      * el código una semántica que la revisión de arquitectura aprobó de otra forma.
@@ -95,7 +95,7 @@ public class RuntimeRestController {
 
     private record LastEventId(EventSequence seq, String outcome) {}
 
-    /** {@code Last-Event-ID} que no es un {@code seq}. SPEC-004 §2ter: 400, no reintentable. */
+    /** {@code Last-Event-ID} que no es un {@code seq}. SPEC-009 §2ter: 400, no reintentable. */
     static final class InvalidLastEventIdException extends RuntimeException {
         InvalidLastEventIdException(String received) {
             super("Last-Event-ID must be a numeric event sequence, got: " + received);

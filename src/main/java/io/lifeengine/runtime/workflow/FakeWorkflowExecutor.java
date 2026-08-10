@@ -155,19 +155,23 @@ public class FakeWorkflowExecutor {
             return;
         }
         Instant now = Instant.now();
-        store.findRun(runId)
-                .ifPresent(
-                        run -> {
-                            Run updated = run.withStatus(RunStatus.FAILED, now);
-                            store.saveRun(updated);
-                        });
         RuntimeEvent failed =
                 RuntimeEvent.of(
                         runId,
                         EventType.RUN_FAILED.wireName(),
                         Map.of("error", err.getMessage() == null ? err.toString() : err.getMessage()),
                         true);
-        eventPublisher.publish(store.appendEvent(failed));
+        // Evento antes que estado, en una transacción (ADR-RT-003). Estaba al revés: se guardaba
+        // FAILED y recién después el evento, o sea el mismo patrón que motivó el bloqueante — y
+        // encima distinto de lo que hace DefinitionDrivenWorkflowExecutor.failRun ante la misma
+        // invariante.
+        store.findRun(runId)
+                .ifPresentOrElse(
+                        run ->
+                                eventPublisher.publish(
+                                        store.appendEventAndSaveRun(
+                                                failed, run.withStatus(RunStatus.FAILED, now))),
+                        () -> eventPublisher.publish(store.appendEvent(failed)));
         cancelFlags.remove(runId);
         log.warn("Fake workflow failed runId={} msg={}", runId, err.toString());
     }
