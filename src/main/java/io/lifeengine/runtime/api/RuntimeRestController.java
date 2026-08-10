@@ -4,6 +4,7 @@ import io.lifeengine.runtime.agents.AgentNotFoundException;
 import io.lifeengine.runtime.core.RunNotFoundException;
 import io.lifeengine.runtime.core.RunService;
 import io.lifeengine.runtime.core.UnknownWorkflowException;
+import io.lifeengine.runtime.domain.RuntimeEvent;
 import io.lifeengine.runtime.tools.ToolNotFoundException;
 import io.lifeengine.runtime.events.RunEventStreamService;
 import io.lifeengine.runtime.observability.RuntimeMetrics;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
@@ -50,15 +52,38 @@ public class RuntimeRestController {
     }
 
     @GetMapping(value = "/{runId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<RuntimeEventResponse>> streamRun(@PathVariable UUID runId) {
+    public Flux<ServerSentEvent<RuntimeEventResponse>> streamRun(
+            @PathVariable UUID runId,
+            @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId) {
         metrics.recordSseStreamOpened();
-        return eventStreamService.stream(runId);
+        return eventStreamService.stream(runId, parseLastEventId(lastEventId));
     }
 
     /** @deprecated Prefer {@code /stream}; kept for cockpit compatibility. */
     @GetMapping(value = "/{runId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<RuntimeEventResponse>> streamEventsLegacy(@PathVariable UUID runId) {
-        return streamRun(runId);
+    public Flux<ServerSentEvent<RuntimeEventResponse>> streamEventsLegacy(
+            @PathVariable UUID runId,
+            @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId) {
+        return streamRun(runId, lastEventId);
+    }
+
+    /**
+     * El navegador reenvía el último id recibido al reconectar. Desde ADR-RT-012 ese id es el
+     * {@code seq}.
+     *
+     * <p>Un id no numérico es un cliente viejo que reconecta con un UUID: se lo trata como
+     * "desde el principio" en vez de rechazarlo, porque rechazar dejaría al cockpit sin stream
+     * durante la ventana de despliegue en la que las dos versiones conviven.
+     */
+    private static long parseLastEventId(String lastEventId) {
+        if (lastEventId == null || lastEventId.isBlank()) {
+            return RuntimeEvent.UNASSIGNED_SEQ;
+        }
+        try {
+            return Math.max(RuntimeEvent.UNASSIGNED_SEQ, Long.parseLong(lastEventId.trim()));
+        } catch (NumberFormatException notASeq) {
+            return RuntimeEvent.UNASSIGNED_SEQ;
+        }
     }
 
     @PostMapping("/{runId}/cancel")

@@ -20,7 +20,8 @@ public record RuntimeEventResponse(
         String toolId,
         Instant timestamp,
         Map<String, String> payload,
-        boolean terminal) {
+        boolean terminal,
+        long seq) {
 
     private static final Set<String> TOP_LEVEL_KEYS =
             Set.of(
@@ -66,6 +67,7 @@ public record RuntimeEventResponse(
                 toolId,
                 event.occurredAt(),
                 payload,
-                event.terminal());
+                event.terminal(),
+                event.seq());
     }
 }

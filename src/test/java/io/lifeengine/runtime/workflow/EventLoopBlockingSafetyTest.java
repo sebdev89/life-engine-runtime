@@ -192,9 +192,15 @@ class EventLoopBlockingSafetyTest {
         }
 
         @Override
-        public void appendEvent(RuntimeEvent event) {
+        public RuntimeEvent appendEvent(RuntimeEvent event) {
             record("appendEvent[" + event.type() + "]");
-            delegate.appendEvent(event);
+            return delegate.appendEvent(event);
+        }
+
+        @Override
+        public RuntimeEvent appendEventAndSaveRun(RuntimeEvent event, Run run) {
+            record("appendEventAndSaveRun[" + event.type() + "]");
+            return delegate.appendEventAndSaveRun(event, run);
         }
 
         @Override

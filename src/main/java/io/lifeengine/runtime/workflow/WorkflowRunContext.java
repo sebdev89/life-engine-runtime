@@ -150,8 +150,10 @@ public final class WorkflowRunContext {
             enriched.putAll(attributes);
         }
         RuntimeEvent event = RuntimeEvent.of(runId, type, enriched, terminal);
-        store.appendEvent(event);
-        publisher.publish(event);
+        // Se publica el evento QUE VOLVIÓ del store, no el de entrada: es el único que trae el
+        // `seq` asignado por el log. Publicar el original haría que el cliente reciba por SSE un
+        // evento sin lugar en el orden, y con eso no puede reanudar (ADR-RT-012).
+        publisher.publish(store.appendEvent(event));
     }
 
     /**

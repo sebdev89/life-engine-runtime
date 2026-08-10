@@ -179,7 +179,6 @@ public class RunService {
                                             cancelled.startedAt(),
                                             cancelled.finishedAt(),
                                             metadata);
-                            store.saveRun(withNote);
                             RuntimeEvent event =
                                     RuntimeEvent.of(
                                             runId,
@@ -192,8 +191,11 @@ public class RunService {
                                                     "correlationId",
                                                     run.correlationId()),
                                             true);
-                            store.appendEvent(event);
-                            eventPublisher.publish(event);
+                            // Evento y proyección en una sola transacción, el evento primero
+                            // (ADR-RT-003). Antes se guardaba el estado y RECIÉN DESPUÉS el
+                            // evento: si el proceso moría en el medio, quedaba un run cancelado
+                            // que el log no podía explicar.
+                            eventPublisher.publish(store.appendEventAndSaveRun(event, withNote));
                             RunLogContext.put(
                                     run.correlationId(), runId.toString(), run.workflowId());
                             try {
