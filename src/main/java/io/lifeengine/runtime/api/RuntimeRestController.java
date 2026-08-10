@@ -89,7 +89,6 @@ public class RuntimeRestController {
             }
             return new LastEventId(EventSequence.of(parsed), "ok");
         } catch (NumberFormatException notASeq) {
-            metrics.recordStreamResume("invalid");
             throw new InvalidLastEventIdException(lastEventId);
         }
     }
@@ -104,9 +103,18 @@ public class RuntimeRestController {
     }
 
     @org.springframework.web.bind.annotation.ExceptionHandler(InvalidLastEventIdException.class)
-    @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public Mono<ApiError> invalidLastEventId(InvalidLastEventIdException ex) {
-        return Mono.just(new ApiError("validation_failed", ex.getMessage()));
+    public Mono<org.springframework.http.ResponseEntity<ApiError>> invalidLastEventId(
+            InvalidLastEventIdException ex) {
+        // El outcome se cuenta acá y no en el parseo: el parseo puede lanzar desde dos ramas
+        // (no numérico y negativo) y contarlo ahí duplicaba la serie.
+        metrics.recordStreamResume("invalid");
+        // ResponseEntity con Content-Type explícito: el mapping declara `produces
+        // text/event-stream`, y sin esto el cuerpo del error se intentaría serializar como SSE.
+        // El cliente recibía el 400 sin poder leer el `code`.
+        return Mono.just(
+                org.springframework.http.ResponseEntity.badRequest()
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(new ApiError("validation_failed", ex.getMessage())));
     }
 
     @PostMapping("/{runId}/cancel")

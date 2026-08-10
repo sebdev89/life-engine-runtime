@@ -44,7 +44,16 @@ public class GlobalEventStreamService {
     }
 
     public Flux<ServerSentEvent<RuntimeEventResponse>> stream(GlobalEventFilter filter) {
-        Predicate<RuntimeEvent> matcher = matcherFor(filter);
+        return stream(filter, io.lifeengine.runtime.domain.EventSequence.UNASSIGNED);
+    }
+
+    /**
+     * @param afterSeq no reentrega lo que el cliente ya vio. El spine es live-only por diseño, así
+     *     que "reanudar" acá es exactamente eso: sin replay de historia, pero sin duplicados.
+     */
+    public Flux<ServerSentEvent<RuntimeEventResponse>> stream(
+            GlobalEventFilter filter, io.lifeengine.runtime.domain.EventSequence afterSeq) {
+        Predicate<RuntimeEvent> matcher = matcherFor(filter).and(e -> !e.hasSeq() || e.seq().isAfter(afterSeq));
 
         Flux<ServerSentEvent<RuntimeEventResponse>> events =
                 publisher.globalLive()
