@@ -22,18 +22,13 @@ public record RuntimeEvent(
         String source,
         Map<String, String> attributes,
         boolean terminal,
-        long seq) {
-
-    /** Un evento que todavía no pasó por la persistencia y por lo tanto no tiene lugar en el orden. */
-    public static final long UNASSIGNED_SEQ = 0L;
+        EventSequence seq) {
 
     public RuntimeEvent {
         type = type == null ? "" : type.strip();
         source = source == null ? "runtime-core" : source.strip();
         attributes = attributes == null ? Map.of() : Map.copyOf(attributes);
-        if (seq < 0) {
-            seq = UNASSIGNED_SEQ;
-        }
+        seq = seq == null ? EventSequence.UNASSIGNED : seq;
     }
 
     public static RuntimeEvent of(UUID runId, String type, Map<String, String> attributes, boolean terminal) {
@@ -45,17 +40,17 @@ public record RuntimeEvent(
                 "runtime-core",
                 attributes,
                 terminal,
-                UNASSIGNED_SEQ);
+                EventSequence.UNASSIGNED);
     }
 
     /** Copia con el número de orden que asignó la persistencia. */
-    public RuntimeEvent withSeq(long assignedSeq) {
+    public RuntimeEvent withSeq(EventSequence assignedSeq) {
         return new RuntimeEvent(
                 eventId, runId, type, occurredAt, source, attributes, terminal, assignedSeq);
     }
 
     /** True cuando el evento ya ocupa un lugar en el orden del log. */
     public boolean hasSeq() {
-        return seq > UNASSIGNED_SEQ;
+        return seq.isAssigned();
     }
 }

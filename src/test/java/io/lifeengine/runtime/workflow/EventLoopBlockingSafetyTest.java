@@ -68,7 +68,7 @@ class EventLoopBlockingSafetyTest {
     void llmFailureFromNonBlockingThread_neverInvokesRunStoreOnNonBlockingThread()
             throws InterruptedException {
         ThreadAuditingRunStore store = new ThreadAuditingRunStore(new InMemoryRunStore());
-        RunEventPublisher eventPublisher = new RunEventPublisher();
+        RunEventPublisher eventPublisher = new RunEventPublisher(new io.lifeengine.runtime.observability.RuntimeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
         NonBlockingErrorLlmClient llm = new NonBlockingErrorLlmClient();
         AgentRegistry agentRegistry = new AgentRegistry(List.of(new FailingLlmAgent(llm)));
         ToolRegistry toolRegistry = new ToolRegistry(List.of());

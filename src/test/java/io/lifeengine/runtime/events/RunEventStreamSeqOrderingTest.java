@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.lifeengine.runtime.api.RuntimeEventResponse;
 import io.lifeengine.runtime.core.InMemoryRunStore;
+import io.lifeengine.runtime.domain.EventSequence;
 import io.lifeengine.runtime.domain.Run;
 import io.lifeengine.runtime.domain.RunStatus;
 import io.lifeengine.runtime.domain.RuntimeEvent;
@@ -36,8 +37,8 @@ class RunEventStreamSeqOrderingTest {
     @BeforeEach
     void setUp() {
         store = new InMemoryRunStore();
-        publisher = new RunEventPublisher();
-        service = new RunEventStreamService(store, publisher);
+        publisher = new RunEventPublisher(new io.lifeengine.runtime.observability.RuntimeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+        service = new RunEventStreamService(store, publisher, new io.lifeengine.runtime.observability.RuntimeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
         runId = UUID.randomUUID();
         store.saveRun(
                 new Run(
@@ -56,7 +57,7 @@ class RunEventStreamSeqOrderingTest {
         return store.appendEvent(RuntimeEvent.of(runId, type, Map.of(), terminal));
     }
 
-    private List<ServerSentEvent<RuntimeEventResponse>> collect(long afterSeq) {
+    private List<ServerSentEvent<RuntimeEventResponse>> collect(EventSequence afterSeq) {
         List<ServerSentEvent<RuntimeEventResponse>> out =
                 service.stream(runId, afterSeq).take(Duration.ofSeconds(5)).collectList().block();
         return out == null ? List.of() : out;
@@ -72,7 +73,7 @@ class RunEventStreamSeqOrderingTest {
         RuntimeEvent live = append("RUN_SUCCEEDED", true);
         publisher.publish(live);
 
-        List<Long> seqs = collect(RuntimeEvent.UNASSIGNED_SEQ).stream()
+        List<EventSequence> seqs = collect(EventSequence.UNASSIGNED).stream()
                 .map(sse -> sse.data().seq())
                 .toList();
 
@@ -86,11 +87,11 @@ class RunEventStreamSeqOrderingTest {
         RuntimeEvent event = append("RUN_STARTED", false);
         append("RUN_SUCCEEDED", true);
 
-        ServerSentEvent<RuntimeEventResponse> firstFrame = collect(RuntimeEvent.UNASSIGNED_SEQ).get(0);
+        ServerSentEvent<RuntimeEventResponse> firstFrame = collect(EventSequence.UNASSIGNED).get(0);
 
         assertThat(firstFrame.id())
                 .as("el id del SSE es el seq — es lo que permite reanudar")
-                .isEqualTo(String.valueOf(event.seq()));
+                .isEqualTo(event.seq().toString());
         assertThat(firstFrame.data().eventId())
                 .as("eventId no desaparece: quedó congelado en el payload")
                 .isEqualTo(event.eventId());
@@ -103,7 +104,7 @@ class RunEventStreamSeqOrderingTest {
         RuntimeEvent second = append("STAGE_STARTED", false);
         RuntimeEvent third = append("RUN_SUCCEEDED", true);
 
-        List<Long> resumed = collect(second.seq()).stream().map(sse -> sse.data().seq()).toList();
+        List<EventSequence> resumed = collect(second.seq()).stream().map(sse -> sse.data().seq()).toList();
 
         assertThat(resumed)
                 .as("ni repite lo ya visto ni se saltea nada de lo que sigue")
@@ -128,8 +129,8 @@ class RunEventStreamSeqOrderingTest {
         RuntimeEvent c = append("RUN_SUCCEEDED", true);
 
         assertThat(a.hasSeq()).isTrue();
-        assertThat(b.seq()).isGreaterThan(a.seq());
-        assertThat(c.seq()).isGreaterThan(b.seq());
+        assertThat(b.seq().isAfter(a.seq())).isTrue();
+        assertThat(c.seq().isAfter(b.seq())).isTrue();
     }
 
     @Test

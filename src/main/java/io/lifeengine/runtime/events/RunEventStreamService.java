@@ -3,7 +3,9 @@ package io.lifeengine.runtime.events;
 import io.lifeengine.runtime.api.RuntimeEventResponse;
 import io.lifeengine.runtime.core.RunStore;
 import io.lifeengine.runtime.core.RunNotFoundException;
+import io.lifeengine.runtime.domain.EventSequence;
 import io.lifeengine.runtime.domain.RuntimeEvent;
+import io.lifeengine.runtime.observability.RuntimeMetrics;
 import java.time.Duration;
 import java.util.NavigableMap;
 import java.util.Set;
@@ -49,27 +51,32 @@ public class RunEventStreamService {
 
     private final RunStore store;
     private final RunEventPublisher publisher;
+    private final RuntimeMetrics metrics;
+    private final java.util.concurrent.atomic.AtomicInteger pendingTotal =
+            new java.util.concurrent.atomic.AtomicInteger();
 
-    public RunEventStreamService(RunStore store, RunEventPublisher publisher) {
+    public RunEventStreamService(RunStore store, RunEventPublisher publisher, RuntimeMetrics metrics) {
         this.store = store;
         this.publisher = publisher;
+        this.metrics = metrics;
+        metrics.registerReorderBufferGauge(pendingTotal::get);
     }
 
     public Flux<ServerSentEvent<RuntimeEventResponse>> stream(UUID runId) {
-        return stream(runId, RuntimeEvent.UNASSIGNED_SEQ);
+        return stream(runId, EventSequence.UNASSIGNED);
     }
 
     /**
      * @param afterSeq reanuda estrictamente después de este {@code seq}. {@link
      *     RuntimeEvent#UNASSIGNED_SEQ} entrega el run desde el principio.
      */
-    public Flux<ServerSentEvent<RuntimeEventResponse>> stream(UUID runId, long afterSeq) {
+    public Flux<ServerSentEvent<RuntimeEventResponse>> stream(UUID runId, EventSequence afterSeq) {
         // Defer all RunStore access so the existence check and replay read happen on
         // boundedElastic — never on the Netty event loop that handles the SSE handshake.
         return Flux.defer(() -> buildStream(runId, afterSeq)).subscribeOn(Schedulers.boundedElastic());
     }
 
-    private Flux<ServerSentEvent<RuntimeEventResponse>> buildStream(UUID runId, long afterSeq) {
+    private Flux<ServerSentEvent<RuntimeEventResponse>> buildStream(UUID runId, EventSequence afterSeq) {
         if (store.findRun(runId).isEmpty()) {
             return Flux.error(new RunNotFoundException(runId));
         }
@@ -113,13 +120,13 @@ public class RunEventStreamService {
     private final class SeqOrderedEmitter {
 
         private final FluxSink<ServerSentEvent<RuntimeEventResponse>> sink;
-        private final long afterSeq;
+        private final EventSequence afterSeq;
         private final Set<UUID> seen = ConcurrentHashMap.newKeySet();
         private final NavigableMap<Long, RuntimeEvent> pending = new TreeMap<>();
         private boolean replayDone;
-        private long lastEmitted;
+        private EventSequence lastEmitted;
 
-        SeqOrderedEmitter(FluxSink<ServerSentEvent<RuntimeEventResponse>> sink, long afterSeq) {
+        SeqOrderedEmitter(FluxSink<ServerSentEvent<RuntimeEventResponse>> sink, EventSequence afterSeq) {
             this.sink = sink;
             this.afterSeq = afterSeq;
             this.lastEmitted = afterSeq;
@@ -136,31 +143,42 @@ public class RunEventStreamService {
                 emit(event);
                 return;
             }
-            if (event.seq() <= afterSeq) {
+            if (!event.seq().isAfter(afterSeq)) {
                 return; // el cliente ya lo vio; reanudó después de este
             }
             if (!replayDone) {
-                pending.put(event.seq(), event);
+                pending.put(event.seq().value(), event);
+                pendingTotal.incrementAndGet();
                 return;
             }
-            if (event.seq() > lastEmitted) {
+            if (event.seq().isAfter(lastEmitted)) {
                 emit(event);
+                return;
             }
+            // Rezagado: su seq es menor al último emitido. Pasa cuando dos eventos se publican en
+            // orden distinto al que el log les asignó (cancelRun publica desde el hilo HTTP
+            // mientras el workflow emite desde boundedElastic). Se emite IGUAL —fuera de orden es
+            // mejor que perderlo— y se cuenta el hueco, que es lo que SPEC-004 §2ter exige.
+            metrics.recordStreamReorderGap();
+            emit(event);
         }
 
         /** Fin del replay: se drena lo retenido en orden y se pasa a emisión directa. */
         synchronized void drainPending() {
             replayDone = true;
             for (RuntimeEvent event : pending.values()) {
-                if (event.seq() > lastEmitted) {
+                if (event.seq().isAfter(lastEmitted)) {
                     emit(event);
                 }
             }
+            pendingTotal.addAndGet(-pending.size());
             pending.clear();
         }
 
         private void emit(RuntimeEvent event) {
-            lastEmitted = Math.max(lastEmitted, event.seq());
+            if (event.seq().isAfter(lastEmitted)) {
+                lastEmitted = event.seq();
+            }
             sink.next(toSse(event));
             if (event.terminal()) {
                 sink.complete();
@@ -173,7 +191,7 @@ public class RunEventStreamService {
                 // El id del SSE es `seq`, no `eventId`: es lo que permite reanudar con
                 // Last-Event-ID de forma exacta. `eventId` sigue viajando en el payload y quedó
                 // congelado ahí como contrato (ADR-RT-012).
-                .id(String.valueOf(event.seq()))
+                .id(event.seq().toString())
                 .event(event.type())
                 .data(RuntimeEventResponse.from(event))
                 .build();

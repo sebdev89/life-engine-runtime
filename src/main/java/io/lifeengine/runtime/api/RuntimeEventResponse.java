@@ -1,5 +1,6 @@
 package io.lifeengine.runtime.api;
 
+import io.lifeengine.runtime.domain.EventSequence;
 import io.lifeengine.runtime.domain.RuntimeEvent;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -21,7 +22,7 @@ public record RuntimeEventResponse(
         Instant timestamp,
         Map<String, String> payload,
         boolean terminal,
-        long seq) {
+        EventSequence seq) {
 
     private static final Set<String> TOP_LEVEL_KEYS =
             Set.of(

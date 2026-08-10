@@ -1,6 +1,7 @@
 package io.lifeengine.runtime.core;
 
 import io.lifeengine.runtime.domain.AgentStageRecord;
+import io.lifeengine.runtime.domain.EventSequence;
 import io.lifeengine.runtime.domain.Run;
 import io.lifeengine.runtime.domain.RuntimeEvent;
 import io.lifeengine.runtime.llm.LlmCallRecord;
@@ -53,7 +54,7 @@ public class InMemoryRunStore implements RunStore {
                 return existing;
             }
         }
-        RuntimeEvent stored = event.withSeq(seqGenerator.incrementAndGet());
+        RuntimeEvent stored = event.withSeq(EventSequence.of(seqGenerator.incrementAndGet()));
         list.add(stored);
         return stored;
     }

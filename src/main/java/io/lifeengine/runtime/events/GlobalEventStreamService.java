@@ -100,7 +100,7 @@ public class GlobalEventStreamService {
     private static ServerSentEvent<RuntimeEventResponse> toSse(RuntimeEvent event) {
         return ServerSentEvent.<RuntimeEventResponse>builder()
                 // Mismo criterio que el stream por run: el id del SSE es `seq` (ADR-RT-012).
-                .id(String.valueOf(event.seq()))
+                .id(event.seq().toString())
                 .event(event.type())
                 .data(RuntimeEventResponse.from(event))
                 .build();

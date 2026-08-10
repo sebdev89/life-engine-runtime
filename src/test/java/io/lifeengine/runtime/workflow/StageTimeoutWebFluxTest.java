@@ -50,7 +50,7 @@ class StageTimeoutWebFluxTest {
     void slowStage_exceedingStageTimeout_failsRunWithTimeoutMessage() throws InterruptedException {
         SlowTool slowTool = new SlowTool();
         InMemoryRunStore store = new InMemoryRunStore();
-        RunEventPublisher eventPublisher = new RunEventPublisher();
+        RunEventPublisher eventPublisher = new RunEventPublisher(new io.lifeengine.runtime.observability.RuntimeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
         AgentRegistry agentRegistry = new AgentRegistry(List.of());
         ToolRegistry toolRegistry = new ToolRegistry(List.of(slowTool));
         RuntimeMetrics metrics = new RuntimeMetrics(new SimpleMeterRegistry());

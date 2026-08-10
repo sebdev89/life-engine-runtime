@@ -3,6 +3,7 @@ package io.lifeengine.runtime.core;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.lifeengine.runtime.domain.AgentStageRecord;
+import io.lifeengine.runtime.domain.EventSequence;
 import io.lifeengine.runtime.domain.Run;
 import io.lifeengine.runtime.domain.RunStatus;
 import io.lifeengine.runtime.domain.RuntimeEvent;
@@ -82,10 +83,16 @@ public class R2dbcRunStore implements RunStore {
 
     private static final String INSERT_EVENT_SQL =
             """
-            INSERT INTO runtime_event (event_id, run_id, type, occurred_at, source, attributes, terminal)
-            VALUES (:event_id, :run_id, :type, :occurred_at, :source, :attributes, :terminal)
-            ON CONFLICT (event_id) DO UPDATE SET event_id = EXCLUDED.event_id
-            RETURNING seq
+            WITH inserted AS (
+                INSERT INTO runtime_event (event_id, run_id, type, occurred_at, source, attributes, terminal)
+                VALUES (:event_id, :run_id, :type, :occurred_at, :source, :attributes, :terminal)
+                ON CONFLICT (event_id) DO NOTHING
+                RETURNING seq
+            )
+            SELECT seq FROM inserted
+            UNION ALL
+            SELECT seq FROM runtime_event WHERE event_id = :event_id
+            LIMIT 1
             """;
 
     private static final String FIND_EVENTS_SQL =
@@ -188,7 +195,7 @@ public class R2dbcRunStore implements RunStore {
     @Override
     public RuntimeEvent appendEvent(RuntimeEvent event) {
         Long assigned = insertEvent(event).block(BLOCK_TIMEOUT);
-        return assigned == null ? event : event.withSeq(assigned);
+        return assigned == null ? event : event.withSeq(EventSequence.of(assigned));
     }
 
     @Override
@@ -200,13 +207,21 @@ public class R2dbcRunStore implements RunStore {
                 transactionalOperator
                         .transactional(insertEvent(event).flatMap(seq -> upsertRun(run).thenReturn(seq)))
                         .block(BLOCK_TIMEOUT);
-        return assigned == null ? event : event.withSeq(assigned);
+        return assigned == null ? event : event.withSeq(EventSequence.of(assigned));
     }
 
     /**
-     * {@code ON CONFLICT ... DO UPDATE} y no {@code DO NOTHING} para que {@code RETURNING} devuelva
-     * el {@code seq} también cuando el evento ya estaba. Con {@code DO NOTHING} el reintento
-     * idempotente no devolvería nada y el evento quedaría sin número de orden.
+     * Inserta y devuelve el {@code seq}, sin tocar nunca una fila ya escrita.
+     *
+     * <p>El CTE existe por la invariante I3 (append-only literal). {@code DO NOTHING} solo no
+     * sirve: en el reintento idempotente {@code RETURNING} no devuelve nada y el evento se
+     * quedaría sin número. La versión anterior usaba {@code DO UPDATE SET event_id = event_id},
+     * que devuelve el seq pero **es un UPDATE real** en Postgres —toma lock de fila y crea una
+     * versión nueva—, así que violaba I3 aunque el dato no cambiara.
+     *
+     * <p>El {@code UNION ALL … LIMIT 1} resuelve la carrera sin bloqueo: si el INSERT ganó, la
+     * primera rama trae su seq; si otro lo insertó primero, la segunda encuentra el suyo. En los
+     * dos casos el reintento devuelve el MISMO número que la escritura original.
      */
     private Mono<Long> insertEvent(RuntimeEvent event) {
         return databaseClient
@@ -321,9 +336,9 @@ public class R2dbcRunStore implements RunStore {
                 readJsonMap(row.get("metadata", Json.class), METADATA_TYPE));
     }
 
-    private static long seqOf(Row row) {
+    private static EventSequence seqOf(Row row) {
         Long seq = row.get("seq", Long.class);
-        return seq == null ? RuntimeEvent.UNASSIGNED_SEQ : seq;
+        return seq == null ? EventSequence.UNASSIGNED : EventSequence.of(seq);
     }
 
     private RuntimeEvent mapEvent(Row row) {

@@ -4,7 +4,7 @@ import io.lifeengine.runtime.agents.AgentNotFoundException;
 import io.lifeengine.runtime.core.RunNotFoundException;
 import io.lifeengine.runtime.core.RunService;
 import io.lifeengine.runtime.core.UnknownWorkflowException;
-import io.lifeengine.runtime.domain.RuntimeEvent;
+import io.lifeengine.runtime.domain.EventSequence;
 import io.lifeengine.runtime.tools.ToolNotFoundException;
 import io.lifeengine.runtime.events.RunEventStreamService;
 import io.lifeengine.runtime.observability.RuntimeMetrics;
@@ -56,7 +56,9 @@ public class RuntimeRestController {
             @PathVariable UUID runId,
             @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId) {
         metrics.recordSseStreamOpened();
-        return eventStreamService.stream(runId, parseLastEventId(lastEventId));
+        LastEventId parsed = parseLastEventId(lastEventId);
+        metrics.recordStreamResume(parsed.outcome());
+        return eventStreamService.stream(runId, parsed.seq());
     }
 
     /** @deprecated Prefer {@code /stream}; kept for cockpit compatibility. */
@@ -71,19 +73,40 @@ public class RuntimeRestController {
      * El navegador reenvía el último id recibido al reconectar. Desde ADR-RT-012 ese id es el
      * {@code seq}.
      *
-     * <p>Un id no numérico es un cliente viejo que reconecta con un UUID: se lo trata como
-     * "desde el principio" en vez de rechazarlo, porque rechazar dejaría al cockpit sin stream
-     * durante la ventana de despliegue en la que las dos versiones conviven.
+     * <p>Un id no numérico es {@code 400 validation_failed}, tal como SPEC-004 §2ter congela la
+     * semántica de error. Eso incluye el UUID que mandaría un cliente anterior a F1: la spec no
+     * define compatibilidad para ese caso, y tragárselo devolviendo el run entero sería cambiar en
+     * el código una semántica que la revisión de arquitectura aprobó de otra forma.
      */
-    private static long parseLastEventId(String lastEventId) {
+    private LastEventId parseLastEventId(String lastEventId) {
         if (lastEventId == null || lastEventId.isBlank()) {
-            return RuntimeEvent.UNASSIGNED_SEQ;
+            return new LastEventId(EventSequence.UNASSIGNED, "ok");
         }
         try {
-            return Math.max(RuntimeEvent.UNASSIGNED_SEQ, Long.parseLong(lastEventId.trim()));
+            long parsed = Long.parseLong(lastEventId.trim());
+            if (parsed < 0) {
+                throw new InvalidLastEventIdException(lastEventId);
+            }
+            return new LastEventId(EventSequence.of(parsed), "ok");
         } catch (NumberFormatException notASeq) {
-            return RuntimeEvent.UNASSIGNED_SEQ;
+            metrics.recordStreamResume("invalid");
+            throw new InvalidLastEventIdException(lastEventId);
         }
+    }
+
+    private record LastEventId(EventSequence seq, String outcome) {}
+
+    /** {@code Last-Event-ID} que no es un {@code seq}. SPEC-004 §2ter: 400, no reintentable. */
+    static final class InvalidLastEventIdException extends RuntimeException {
+        InvalidLastEventIdException(String received) {
+            super("Last-Event-ID must be a numeric event sequence, got: " + received);
+        }
+    }
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(InvalidLastEventIdException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Mono<ApiError> invalidLastEventId(InvalidLastEventIdException ex) {
+        return Mono.just(new ApiError("validation_failed", ex.getMessage()));
     }
 
     @PostMapping("/{runId}/cancel")

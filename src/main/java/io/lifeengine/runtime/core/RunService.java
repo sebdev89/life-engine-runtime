@@ -147,6 +147,7 @@ public class RunService {
     }
 
     public Mono<RunDetailResponse> getRunDetail(UUID runId) {
+        io.micrometer.core.instrument.Timer.Sample projection = metrics.startProjectionTimer();
         return Mono.fromCallable(
                         () -> {
                             Run run =
@@ -158,7 +159,8 @@ public class RunService {
                                     store.llmCallRecordsFor(runId),
                                     store.eventsFor(runId));
                         })
-                .subscribeOn(Schedulers.boundedElastic());
+                .subscribeOn(Schedulers.boundedElastic())
+                .doFinally(signal -> metrics.stopProjectionTimer(projection));
     }
 
     public Mono<Run> getRun(UUID runId) {
