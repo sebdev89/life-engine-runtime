@@ -173,7 +173,12 @@ public class DevObservabilityDiagnosisAgent implements AgentExecutor {
             out.set("citedEvidenceIds", mapper.createArrayNode());
         } else {
             out.put("probableCause", cause);
-            out.put("confidence", confidence.equals(INSUFFICIENT) ? "LOW" : confidence);
+            // Se pasa tal cual, incluido INSUFFICIENT_EVIDENCE. Reescribirlo a LOW —como hacía
+            // antes— era SUBIR la confianza que propuso el modelo, y §5.4 dice que sólo puede
+            // bajarse. Además Dev Agent perdía el dato de que el modelo había dicho "no me alcanza".
+            // Quién decide el valor final es ConfidencePolicy, del lado de Dev Agent: acá no vive
+            // política de confianza, sólo la forma de la salida.
+            out.put("confidence", confidence);
             out.set("citedEvidenceIds", citations);
         }
         out.put("reasoning", parsed.path("reasoning").asText("").trim());
