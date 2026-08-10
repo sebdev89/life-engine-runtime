@@ -48,12 +48,35 @@ public class GlobalRuntimeEventsController {
     public Flux<ServerSentEvent<RuntimeEventResponse>> streamGlobal(
             @RequestParam(value = "workflowId", required = false) String workflowId,
             @RequestParam(value = "workflowPrefix", required = false) String workflowPrefix,
-            @RequestParam(value = "runId", required = false) String runId) {
+            @RequestParam(value = "runId", required = false) String runId,
+            @org.springframework.web.bind.annotation.RequestHeader(
+                            name = "Last-Event-ID", required = false)
+                    String lastEventId) {
         // Reuse the per-run SSE counter — both endpoints represent "an SSE stream is open"
         // from the runtime's POV; splitting metrics is a Phase-2 detail, not a Phase-1 need.
         metrics.recordSseStreamOpened();
         GlobalEventFilter filter = GlobalEventFilter.from(workflowId, workflowPrefix, runId);
-        return streamService.stream(filter);
+        return streamService.stream(filter, parseAfterSeq(lastEventId));
+    }
+
+    /**
+     * El spine emite `id: seq`, así que un EventSource reconecta mandando ese id. Antes se
+     * ignoraba: la interfaz aparentaba ser reanudable y no lo era.
+     *
+     * <p>El spine es live-only por diseño —no replaya la historia de todos los runs— así que
+     * "reanudar" acá significa NO reentregar lo que el cliente ya vio. Eso sí se puede cumplir, y
+     * es lo que hace honesta la interfaz.
+     */
+    private static io.lifeengine.runtime.domain.EventSequence parseAfterSeq(String lastEventId) {
+        if (lastEventId == null || lastEventId.isBlank()) {
+            return io.lifeengine.runtime.domain.EventSequence.UNASSIGNED;
+        }
+        try {
+            return io.lifeengine.runtime.domain.EventSequence.of(Long.parseLong(lastEventId.trim()));
+        } catch (NumberFormatException notASeq) {
+            throw new IllegalArgumentException(
+                    "Last-Event-ID must be a numeric event sequence, got: " + lastEventId);
+        }
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

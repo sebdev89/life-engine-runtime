@@ -78,6 +78,12 @@ public class RunService {
                             String input = request.input().trim();
                             Map<String, Object> metadata = new HashMap<>(request.metadata());
                             metadata.put("input", input);
+                            // El executor se resuelve ANTES de construir el Run: `Run` copia el
+                            // mapa al construirse, así que mutarlo después no lo cambia. Y validar
+                            // acá hace que un workflowId inexistente falle sin dejar rastro en el
+                            // log, en vez de dejar un run que arrancó y nunca termina.
+                            String executor = workflowRouter.resolveExecutorLabel(workflowId);
+                            metadata.put("executor", executor);
 
                             Run run =
                                     new Run(
@@ -90,24 +96,27 @@ public class RunService {
                                             null,
                                             null,
                                             metadata);
+                            // El alta va sin evento y no es excepción a ADR-RT-003:
+                            // `runtime_event.run_id` referencia a `runtime_run(id)`, así que un
+                            // evento previo a la creación es físicamente imposible. La invariante
+                            // gobierna las TRANSICIONES, no el alta.
                             store.saveRun(run);
-                            Run running = run.withStatus(RunStatus.RUNNING, Instant.now()).withStartedAt(now);
-                            store.saveRun(running);
 
-                            String executor =
-                                    workflowRouter.start(workflowId, runId, input, correlationId, caller);
-                            metadata.put("executor", executor);
-                            store.saveRun(
-                                    new Run(
-                                            running.id(),
-                                            running.status(),
-                                            running.workflowId(),
-                                            running.correlationId(),
-                                            running.createdAt(),
-                                            running.updatedAt(),
-                                            running.startedAt(),
-                                            running.finishedAt(),
-                                            metadata));
+                            // QUEUED → RUNNING con su evento, en una sola transacción. No hay
+                            // ningún saveRun después de lanzar el workflow: esa escritura podía
+                            // pisar un estado terminal ya alcanzado —un agente inexistente falla
+                            // apenas se suscribe— y devolverlo a RUNNING sin evento que lo
+                            // explicara, falsificando la invariante I4.
+                            Run running = run.withStatus(RunStatus.RUNNING, Instant.now()).withStartedAt(now);
+                            RuntimeEvent startedEvent =
+                                    RuntimeEvent.of(
+                                            runId,
+                                            EventType.RUN_STARTED.wireName(),
+                                            Map.of("workflowId", workflowId, "correlationId", correlationId),
+                                            false);
+                            eventPublisher.publish(store.appendEventAndSaveRun(startedEvent, running));
+
+                            workflowRouter.start(workflowId, runId, input, correlationId, caller);
 
                             RunLogContext.put(correlationId, runId.toString(), workflowId);
                             try {
@@ -131,6 +140,7 @@ public class RunService {
     }
 
     public Mono<RunDetailResponse> getRunDetail(UUID runId) {
+        io.micrometer.core.instrument.Timer.Sample projection = metrics.startProjectionTimer();
         return Mono.fromCallable(
                         () -> {
                             Run run =
@@ -142,7 +152,8 @@ public class RunService {
                                     store.llmCallRecordsFor(runId),
                                     store.eventsFor(runId));
                         })
-                .subscribeOn(Schedulers.boundedElastic());
+                .subscribeOn(Schedulers.boundedElastic())
+                .doFinally(signal -> metrics.stopProjectionTimer(projection));
     }
 
     public Mono<Run> getRun(UUID runId) {
@@ -179,7 +190,6 @@ public class RunService {
                                             cancelled.startedAt(),
                                             cancelled.finishedAt(),
                                             metadata);
-                            store.saveRun(withNote);
                             RuntimeEvent event =
                                     RuntimeEvent.of(
                                             runId,
@@ -192,8 +202,11 @@ public class RunService {
                                                     "correlationId",
                                                     run.correlationId()),
                                             true);
-                            store.appendEvent(event);
-                            eventPublisher.publish(event);
+                            // Evento y proyección en una sola transacción, el evento primero
+                            // (ADR-RT-003). Antes se guardaba el estado y RECIÉN DESPUÉS el
+                            // evento: si el proceso moría en el medio, quedaba un run cancelado
+                            // que el log no podía explicar.
+                            eventPublisher.publish(store.appendEventAndSaveRun(event, withNote));
                             RunLogContext.put(
                                     run.correlationId(), runId.toString(), run.workflowId());
                             try {
