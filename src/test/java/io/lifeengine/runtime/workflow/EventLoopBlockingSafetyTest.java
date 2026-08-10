@@ -118,9 +118,12 @@ class EventLoopBlockingSafetyTest {
         List<RuntimeEvent> events = store.eventsFor(runId);
         List<String> types = events.stream().map(RuntimeEvent::type).toList();
         Assertions.assertThat(types)
+                // RUN_STARTED ya no se espera acá: este test invoca al executor en aislamiento, y
+                // desde F1 ese evento lo escribe RunService junto con la transición a RUNNING, en
+                // una sola transacción. El camino real sigue cubierto por los tests que entran por
+                // la API (LlmWorkflowHappyPathTest, LlmWorkflowWebFluxTest).
                 .as("expected lifecycle including terminal RUN_FAILED")
                 .containsSubsequence(
-                        "RUN_STARTED",
                         "STAGE_STARTED",
                         "AGENT_STARTED",
                         "LLM_CALL_STARTED",

@@ -90,9 +90,25 @@ public class RunService {
                                             null,
                                             null,
                                             metadata);
+                            // La fila del run se crea primero y SIN evento, y no es una excepción a
+                            // ADR-RT-003: `runtime_event.run_id` referencia a `runtime_run(id)`, así
+                            // que un evento previo a la creación es físicamente imposible. La
+                            // invariante gobierna las TRANSICIONES, no el alta.
                             store.saveRun(run);
+
+                            // QUEUED → RUNNING sí es una transición, y va con su evento en una sola
+                            // transacción. Antes se guardaba RUNNING acá y el RUN_STARTED lo emitía
+                            // después el executor, fuera de transacción: si el proceso moría en el
+                            // medio quedaba un run RUNNING con cero filas en el log — exactamente el
+                            // caso que motivó esta fase.
                             Run running = run.withStatus(RunStatus.RUNNING, Instant.now()).withStartedAt(now);
-                            store.saveRun(running);
+                            RuntimeEvent startedEvent =
+                                    RuntimeEvent.of(
+                                            runId,
+                                            EventType.RUN_STARTED.wireName(),
+                                            Map.of("workflowId", workflowId, "correlationId", correlationId),
+                                            false);
+                            eventPublisher.publish(store.appendEventAndSaveRun(startedEvent, running));
 
                             String executor =
                                     workflowRouter.start(workflowId, runId, input, correlationId, caller);

@@ -80,7 +80,8 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
 
         // Caller is RunService.startRun which already hops to boundedElastic, so this blocking
         // emit is safe. The subsequent reactive chain handles its own scheduling.
-        ctx.emit(EventType.RUN_STARTED, Map.of(), false);
+        // RUN_STARTED ya no se emite acá: lo escribe RunService junto con la transición a RUNNING,
+        // en la misma transacción (ADR-RT-003). Emitirlo también acá lo duplicaría.
 
         RunLogContext.put(correlationId, runId.toString(), definition.workflowId());
         Mono<Void> traced =

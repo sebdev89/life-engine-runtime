@@ -96,8 +96,10 @@ class StageTimeoutWebFluxTest {
 
         List<RuntimeEvent> events = store.eventsFor(runId);
         List<String> types = events.stream().map(RuntimeEvent::type).toList();
+        // Sin RUN_STARTED: este test arranca el executor directo. Desde F1 ese evento lo escribe
+        // RunService con la transición a RUNNING, transaccionalmente.
         Assertions.assertThat(types)
-                .containsSubsequence("RUN_STARTED", "STAGE_STARTED", "STAGE_FAILED", "RUN_FAILED");
+                .containsSubsequence("STAGE_STARTED", "STAGE_FAILED", "RUN_FAILED");
         Assertions.assertThat(types)
                 .as("the slow stage must not appear as succeeded")
                 .doesNotContain("STAGE_SUCCEEDED");
