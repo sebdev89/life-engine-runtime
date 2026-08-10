@@ -54,16 +54,20 @@ public class R2dbcRunStore implements RunStore {
     private static final String UPSERT_RUN_SQL =
             """
             INSERT INTO runtime_run (
-                id, status, workflow_id, correlation_id, created_at, updated_at,
+                id, status, workflow_id, correlation_id, tenant_id, created_at, updated_at,
                 started_at, finished_at, metadata
             ) VALUES (
-                :id, :status, :workflow_id, :correlation_id, :created_at, :updated_at,
+                :id, :status, :workflow_id, :correlation_id, :tenant_id, :created_at, :updated_at,
                 :started_at, :finished_at, :metadata
             )
             ON CONFLICT (id) DO UPDATE SET
                 status         = EXCLUDED.status,
                 workflow_id    = EXCLUDED.workflow_id,
                 correlation_id = EXCLUDED.correlation_id,
+                -- tenant_id NO se pisa en el UPDATE: la corrida se guarda varias veces durante su
+                -- ciclo (QUEUED -> RUNNING -> terminal) y sólo el primer save viene del request
+                -- autenticado. Si se sobrescribiera, un save posterior sin llamador lo borraría.
+                tenant_id      = COALESCE(runtime_run.tenant_id, EXCLUDED.tenant_id),
                 updated_at     = EXCLUDED.updated_at,
                 started_at     = EXCLUDED.started_at,
                 finished_at    = EXCLUDED.finished_at,
@@ -72,7 +76,7 @@ public class R2dbcRunStore implements RunStore {
 
     private static final String FIND_RUN_SQL =
             """
-            SELECT id, status, workflow_id, correlation_id, created_at, updated_at,
+            SELECT id, status, workflow_id, correlation_id, tenant_id, created_at, updated_at,
                    started_at, finished_at, metadata
             FROM runtime_run
             WHERE id = :id
@@ -150,6 +154,7 @@ public class R2dbcRunStore implements RunStore {
                 .bind("status", run.status().name())
                 .bind("workflow_id", run.workflowId())
                 .bind("correlation_id", Parameters.in(R2dbcType.VARCHAR, run.correlationId()))
+                .bind("tenant_id", Parameters.in(R2dbcType.VARCHAR, run.tenantId()))
                 .bind("created_at", run.createdAt())
                 .bind("updated_at", run.updatedAt())
                 .bind("started_at", Parameters.in(R2dbcType.TIMESTAMP_WITH_TIME_ZONE, run.startedAt()))
@@ -283,6 +288,7 @@ public class R2dbcRunStore implements RunStore {
                 RunStatus.valueOf(row.get("status", String.class)),
                 row.get("workflow_id", String.class),
                 row.get("correlation_id", String.class),
+                row.get("tenant_id", String.class),
                 row.get("created_at", Instant.class),
                 row.get("updated_at", Instant.class),
                 row.get("started_at", Instant.class),

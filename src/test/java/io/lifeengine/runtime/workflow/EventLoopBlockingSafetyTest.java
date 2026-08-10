@@ -96,6 +96,7 @@ class EventLoopBlockingSafetyTest {
                         RunStatus.RUNNING,
                         WORKFLOW_ID,
                         "corr-event-loop-safety",
+                        null,
                         now,
                         now,
                         now,

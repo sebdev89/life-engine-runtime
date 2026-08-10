@@ -110,6 +110,7 @@ class R2dbcRunStoreTest {
                         RunStatus.QUEUED,
                         "demo.llm.workflow",
                         "corr-" + runId,
+                        null,
                         now,
                         now,
                         null,
@@ -132,7 +133,8 @@ class R2dbcRunStoreTest {
         UUID runId = UUID.randomUUID();
         Run queued =
                 new Run(
-                        runId, RunStatus.QUEUED, "demo.no-llm.workflow", "c1", now, now, null, null, Map.of());
+                        runId, RunStatus.QUEUED, "demo.no-llm.workflow", "c1", null, now, now, null, null,
+                        Map.of());
         store.saveRun(queued);
 
         Run running = queued.withStatus(RunStatus.RUNNING, now.plusMillis(10)).withStartedAt(now.plusMillis(10));
@@ -331,6 +333,7 @@ class R2dbcRunStoreTest {
                         RunStatus.RUNNING,
                         "demo.llm.workflow",
                         "corr-" + runId,
+                        null,
                         now,
                         now,
                         now,

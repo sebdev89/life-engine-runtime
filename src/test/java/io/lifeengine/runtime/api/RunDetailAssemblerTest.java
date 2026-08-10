@@ -21,6 +21,7 @@ class RunDetailAssemblerTest {
                         RunStatus.CANCELLED,
                         "demo.llm.workflow",
                         "corr-1",
+                        null,
                         Instant.now(),
                         Instant.now(),
                         Instant.now(),
