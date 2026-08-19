@@ -105,6 +105,13 @@ runtime:
     # analyst stage stays comfortably under the 2048-token ceiling.
     max-tokens: 192
     temperature: 0
+    roles:
+      chat:
+        base-url: ${RUNTIME_LLM_CHAT_BASE_URL:http://localhost:11434}
+        model: ${RUNTIME_LLM_CHAT_MODEL:gemma3:4b}
+      fast:
+        base-url: ${RUNTIME_LLM_FAST_BASE_URL:http://localhost:11434}
+        model: ${RUNTIME_LLM_FAST_MODEL:gemma3:4b}
 
 # Build identity overrides. Empty by default: local and CI builds carry a .git directory, so git.properties
 # (git-commit-id) is the source. The Docker image has no .git — CI passes these as build-args → env, and

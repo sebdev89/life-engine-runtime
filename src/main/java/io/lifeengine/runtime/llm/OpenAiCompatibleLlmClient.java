@@ -12,13 +12,11 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
-import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
 
 /** vLLM / OpenAI-compatible chat completions client (single provider, no fallback). */
-@Component
 public class OpenAiCompatibleLlmClient implements LlmClient {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiCompatibleLlmClient.class);
@@ -67,7 +65,8 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         ChatCompletionRequest body = buildRequestBody(model, request.messages());
         String requestJson = toRequestJson(body);
 
-        log.info("LLM request endpoint={} model={} payload={}", endpoint, model, requestJson);
+        log.info("LLM request endpoint={} model={} messageCount={}", endpoint, model, request.messages().size());
+        log.debug("LLM request payload endpoint={} model={} payload={}", endpoint, model, requestJson);
 
         return webClient
                 .post()
