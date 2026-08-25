@@ -43,7 +43,17 @@ public class RuntimeRestController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public Mono<RunResponse> startRun(@Valid @RequestBody StartRunRequest request) {
-        return runService.startRun(request).map(RunResponse::from);
+        return runService
+                .startRun(request)
+                .map(RunResponse::from)
+                // KAN-250: an empty pipeline must never surface as 201 with no body —
+                // downstream clients would treat it as a silently started run.
+                .switchIfEmpty(
+                        Mono.error(
+                                () ->
+                                        new IllegalStateException(
+                                                "startRun completed empty — refusing to return"
+                                                        + " 201 with no body")));
     }
 
     @GetMapping("/{runId}")
