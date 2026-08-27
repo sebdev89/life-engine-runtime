@@ -247,6 +247,54 @@ class LlmRoleRoutingWebFluxTest {
         }
     }
 
+    /**
+     * El rol también viaja en los eventos, que es de donde el cockpit arma la lista de llamadas
+     * mientras el run está en vuelo. El detalle del run sólo lo alcanza cuando ya terminó: sin
+     * esta clave, una corrida en vivo mostraba el modelo y escondía por qué ése.
+     */
+    @Test
+    void llmEvents_carryTheRoleThatServedEachCall() throws Exception {
+        enqueue(mockFast, """
+                {"incident":"x","affectedResource":"y","requestedAction":"z"}
+                """);
+        enqueue(mockFast, """
+                {"category":"INFO","reason":"n/a"}
+                """);
+
+        UUID runId =
+                startRun(
+                        """
+                        {"workflowId":"demo.llm.workflow","input":"rol en los eventos"}
+                        """);
+        awaitTerminal(runId, RunStatus.SUCCEEDED);
+        modelsReceivedBy(mockFast, 2);
+
+        String detail =
+                webTestClient
+                        .get()
+                        .uri("/api/runtime/runs/{runId}", runId)
+                        .exchange()
+                        .expectStatus()
+                        .isOk()
+                        .expectBody(String.class)
+                        .returnResult()
+                        .getResponseBody();
+
+        int llmEvents = 0;
+        for (JsonNode event : JSON.readTree(detail).path("events")) {
+            if (!event.path("type").asText().startsWith("LLM_CALL_")) {
+                continue;
+            }
+            llmEvents++;
+            Assertions.assertThat(event.path("payload").path("modelRole").asText())
+                    .as("evento %s sin el rol que atendió la llamada", event.path("type").asText())
+                    .isEqualTo("fast");
+        }
+        Assertions.assertThat(llmEvents)
+                .as("STARTED + SUCCEEDED por cada uno de los dos agentes")
+                .isEqualTo(4);
+    }
+
     /** Los roles no declaran retry ni response-format, así que los heredan del default. */
     @Test
     void rolesInheritRetryAndResponseFormatFromDefaults() throws Exception {
