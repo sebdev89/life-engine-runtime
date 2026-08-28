@@ -35,6 +35,16 @@ public class InMemoryRunStore implements RunStore {
     }
 
     @Override
+    public Optional<Run> findRunByIdempotencyKey(String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return Optional.empty();
+        }
+        return runs.values().stream()
+                .filter(run -> idempotencyKey.equals(run.metadata().get("idempotencyKey")))
+                .findFirst();
+    }
+
+    @Override
     public void appendEvent(RuntimeEvent event) {
         eventsByRun
                 .computeIfAbsent(event.runId(), id -> new CopyOnWriteArrayList<>())

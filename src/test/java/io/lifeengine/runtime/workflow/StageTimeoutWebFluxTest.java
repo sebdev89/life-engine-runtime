@@ -58,7 +58,7 @@ class StageTimeoutWebFluxTest {
 
         DefinitionDrivenWorkflowExecutor executor =
                 new DefinitionDrivenWorkflowExecutor(
-                        store, eventPublisher, agentRegistry, toolRegistry, metrics, observation);
+                        store, eventPublisher, agentRegistry, toolRegistry, metrics, observation, 20000);
 
         WorkflowDefinition definition =
                 new WorkflowDefinition(

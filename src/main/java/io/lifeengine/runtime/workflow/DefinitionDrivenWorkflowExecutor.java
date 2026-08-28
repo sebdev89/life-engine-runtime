@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.stereotype.Component;
@@ -47,6 +48,7 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
     private final ToolRegistry toolRegistry;
     private final RuntimeMetrics metrics;
     private final RuntimeObservation observation;
+    private final int stageOutputMaxChars;
     private final ConcurrentHashMap<UUID, AtomicBoolean> cancelFlags = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, Disposable> activeJobs = new ConcurrentHashMap<>();
 
@@ -56,13 +58,16 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
             AgentRegistry agentRegistry,
             ToolRegistry toolRegistry,
             RuntimeMetrics metrics,
-            RuntimeObservation observation) {
+            RuntimeObservation observation,
+            @Value("${lifeengine.runtime.workflow.stage-output-max-chars:20000}")
+                    int stageOutputMaxChars) {
         this.store = store;
         this.eventPublisher = eventPublisher;
         this.agentRegistry = agentRegistry;
         this.toolRegistry = toolRegistry;
         this.metrics = metrics;
         this.observation = observation;
+        this.stageOutputMaxChars = stageOutputMaxChars;
     }
 
     @Override
@@ -325,7 +330,10 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
                 .onErrorMap(ToolNotFoundException.class, ex -> ex);
     }
 
-    private static void recordStageSuccess(
+    // Stage outputs are the delivery surface for single-shot workflows (callers poll
+    // agentStages[].output), so the cap is configurable and defaults high enough that large
+    // structured outputs survive intact. Error truncation stays at its original fixed size.
+    private void recordStageSuccess(
             WorkflowRunContext ctx, WorkflowStage stage, String input, String output, Instant started) {
         Instant finished = Instant.now();
         if (stage.kind() == WorkflowStage.StageKind.AGENT) {
@@ -337,7 +345,7 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
                             started,
                             finished,
                             WorkflowRunContext.truncate(input, 500),
-                            WorkflowRunContext.truncate(output, 2000),
+                            WorkflowRunContext.truncate(output, stageOutputMaxChars),
                             null,
                             WorkflowRunContext.stageAttrs(stage)));
         } else {
@@ -349,7 +357,7 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
                             started,
                             finished,
                             WorkflowRunContext.truncate(input, 500),
-                            WorkflowRunContext.truncate(output, 2000),
+                            WorkflowRunContext.truncate(output, stageOutputMaxChars),
                             null,
                             WorkflowRunContext.stageAttrs(stage)));
         }

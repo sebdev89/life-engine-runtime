@@ -64,7 +64,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
                 ? request.model().trim()
                 : properties.model();
         String endpoint = chatCompletionsEndpoint();
-        ChatCompletionRequest body = buildRequestBody(model, request.messages());
+        ChatCompletionRequest body = buildRequestBody(model, request.messages(), request.maxTokens());
         String requestJson = toRequestJson(body);
 
         log.info("LLM request endpoint={} model={} payload={}", endpoint, model, requestJson);
@@ -110,10 +110,17 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     }
 
     ChatCompletionRequest buildRequestBody(String model, List<LlmMessage> messages) {
+        return buildRequestBody(model, messages, null);
+    }
+
+    ChatCompletionRequest buildRequestBody(String model, List<LlmMessage> messages, Integer maxTokensOverride) {
         List<ChatMessage> chatMessages =
                 messages.stream().map(m -> new ChatMessage(m.role(), m.content())).toList();
-        return new ChatCompletionRequest(
-                model, chatMessages, properties.maxTokens(), properties.temperature());
+        int maxTokens =
+                maxTokensOverride != null && maxTokensOverride > 0
+                        ? maxTokensOverride
+                        : properties.maxTokens();
+        return new ChatCompletionRequest(model, chatMessages, maxTokens, properties.temperature());
     }
 
     private String toRequestJson(ChatCompletionRequest body) {

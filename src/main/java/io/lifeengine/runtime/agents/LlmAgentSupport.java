@@ -45,6 +45,22 @@ public final class LlmAgentSupport {
             LlmClient llmClient,
             List<LlmMessage> messages,
             PromptTemplate template) {
+        return callLlm(ctx, stageId, agentId, llmClient, messages, template, null);
+    }
+
+    /**
+     * Variant with a per-call {@code maxTokens} override for modules whose structured outputs do
+     * not fit the global {@code runtime.llm.max-tokens} default. {@code null} keeps the adapter
+     * default.
+     */
+    public static Mono<LlmResponse> callLlm(
+            WorkflowRunContext ctx,
+            String stageId,
+            String agentId,
+            LlmClient llmClient,
+            List<LlmMessage> messages,
+            PromptTemplate template,
+            Integer maxTokens) {
         if (ctx.isCancelled()) {
             return Mono.error(new IllegalStateException("Run cancelled"));
         }
@@ -74,7 +90,7 @@ public final class LlmAgentSupport {
         // would trip Reactor's blocking detector inside R2dbcRunStore.block(...).
         Mono<LlmResponse> chatCall =
                 llmClient
-                        .chatCompletion(new LlmRequest(model, messages))
+                        .chatCompletion(new LlmRequest(model, messages, maxTokens))
                         .publishOn(Schedulers.boundedElastic());
         LlmRetryConfig retry = llmClient.retryConfig();
         if (retry != null && retry.active()) {

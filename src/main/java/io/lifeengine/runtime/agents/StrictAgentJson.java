@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -520,6 +521,123 @@ public final class StrictAgentJson {
         }
         return value.asBoolean();
     }
+
+    // ----------------------------------------------------------------------------------------
+    // Doc-analysis agents (generic document workflows: doc.extract / doc.rank / doc.draft).
+    // ----------------------------------------------------------------------------------------
+
+    private static final Set<String> DOC_REQUIREMENT_CATEGORIES = Set.of("MUST", "NICE");
+
+    public static DocExtractOutput parseDocExtract(String raw) {
+        JsonNode node = requireObject(raw);
+        JsonNode requirementsNode = node.get("requirements");
+        if (requirementsNode == null || !requirementsNode.isArray()) {
+            throw new IllegalArgumentException("missing or non-array field: requirements");
+        }
+        List<DocRequirement> requirements = new ArrayList<>();
+        Set<String> seenIds = new HashSet<>();
+        int index = 0;
+        for (JsonNode requirement : requirementsNode) {
+            if (requirement == null || !requirement.isObject()) {
+                throw new IllegalArgumentException("requirements[" + index + "] must be an object");
+            }
+            String id = requireText(requirement, "id");
+            if (!seenIds.add(id)) {
+                throw new IllegalArgumentException("duplicate requirement id: " + id);
+            }
+            String category = requireText(requirement, "category").toUpperCase(Locale.ROOT);
+            if (!DOC_REQUIREMENT_CATEGORIES.contains(category)) {
+                throw new IllegalArgumentException(
+                        "category must be one of MUST, NICE (got: " + category + ")");
+            }
+            requirements.add(
+                    new DocRequirement(
+                            id,
+                            requireText(requirement, "text"),
+                            category,
+                            requireText(requirement, "evidenceSpan")));
+            index++;
+        }
+        String notes = optionalText(node, "notes");
+        return new DocExtractOutput(
+                List.copyOf(requirements),
+                requireText(node, "language"),
+                notes == null ? "" : notes);
+    }
+
+    public static DocRankOutput parseDocRank(String raw) {
+        JsonNode node = requireObject(raw);
+        String confidence = requireText(node, "confidence").toUpperCase(Locale.ROOT);
+        if (!RISK_LEVELS.contains(confidence)) {
+            throw new IllegalArgumentException(
+                    "confidence must be one of LOW, MEDIUM, HIGH (got: " + confidence + ")");
+        }
+        JsonNode scoresNode = node.get("scores");
+        if (scoresNode == null || !scoresNode.isArray() || scoresNode.isEmpty()) {
+            throw new IllegalArgumentException("scores must be a non-empty array");
+        }
+        List<DocScore> scores = new ArrayList<>();
+        Set<String> seenIds = new HashSet<>();
+        int index = 0;
+        for (JsonNode score : scoresNode) {
+            if (score == null || !score.isObject()) {
+                throw new IllegalArgumentException("scores[" + index + "] must be an object");
+            }
+            String documentId = requireText(score, "documentId");
+            if (!seenIds.add(documentId)) {
+                throw new IllegalArgumentException("duplicate documentId in scores: " + documentId);
+            }
+            scores.add(
+                    new DocScore(
+                            documentId, stringArray(score, "matched"), stringArray(score, "missing")));
+            index++;
+        }
+        return new DocRankOutput(
+                requireText(node, "selectedDocumentId"),
+                List.copyOf(scores),
+                requireText(node, "explanation"),
+                confidence);
+    }
+
+    public static DocDraftOutput parseDocDraft(String raw) {
+        JsonNode node = requireObject(raw);
+        JsonNode claimsNode = node.get("claims");
+        if (claimsNode == null || !claimsNode.isArray()) {
+            throw new IllegalArgumentException("missing or non-array field: claims");
+        }
+        List<DocClaim> claims = new ArrayList<>();
+        int index = 0;
+        for (JsonNode claim : claimsNode) {
+            if (claim == null || !claim.isObject()) {
+                throw new IllegalArgumentException("claims[" + index + "] must be an object");
+            }
+            claims.add(
+                    new DocClaim(
+                            requireText(claim, "text"),
+                            requireText(claim, "groundedIn"),
+                            requireText(claim, "evidenceSpan")));
+            index++;
+        }
+        return new DocDraftOutput(
+                requireText(node, "draft"),
+                List.copyOf(claims),
+                requireBoolean(node, "ungroundedContentDetected"));
+    }
+
+    public record DocRequirement(String id, String text, String category, String evidenceSpan) {}
+
+    public record DocExtractOutput(
+            List<DocRequirement> requirements, String language, String notes) {}
+
+    public record DocScore(String documentId, List<String> matched, List<String> missing) {}
+
+    public record DocRankOutput(
+            String selectedDocumentId, List<DocScore> scores, String explanation, String confidence) {}
+
+    public record DocClaim(String text, String groundedIn, String evidenceSpan) {}
+
+    public record DocDraftOutput(
+            String draft, List<DocClaim> claims, boolean ungroundedContentDetected) {}
 
     public record BusinessContextOutput(
             String intent,

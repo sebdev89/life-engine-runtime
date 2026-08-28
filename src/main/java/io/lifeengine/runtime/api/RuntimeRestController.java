@@ -10,6 +10,7 @@ import io.lifeengine.runtime.observability.RuntimeMetrics;
 import jakarta.validation.Valid;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.support.WebExchangeBindException;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -39,9 +40,17 @@ public class RuntimeRestController {
     }
 
     @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    public Mono<RunResponse> startRun(@Valid @RequestBody StartRunRequest request) {
-        return runService.startRun(request).map(RunResponse::from);
+    public Mono<ResponseEntity<RunResponse>> startRun(@Valid @RequestBody StartRunRequest request) {
+        // 201 for a newly created run; 200 when an idempotencyKey matched an existing run.
+        return runService
+                .startRun(request)
+                .map(
+                        outcome ->
+                                ResponseEntity.status(
+                                                outcome.created()
+                                                        ? HttpStatus.CREATED
+                                                        : HttpStatus.OK)
+                                        .body(RunResponse.from(outcome.run())));
     }
 
     @GetMapping("/{runId}")

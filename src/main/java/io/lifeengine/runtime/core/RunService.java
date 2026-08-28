@@ -18,6 +18,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.security.core.context.SecurityContext;
@@ -46,7 +47,7 @@ public class RunService {
         this.metrics = metrics;
     }
 
-    public Mono<Run> startRun(StartRunRequest request) {
+    public Mono<StartRunOutcome> startRun(StartRunRequest request) {
         Timer.Sample sample = metrics.startRunTimer();
         // Phase-1 JWT pass-through: capture the inbound caller's Authentication HERE, while
         // we are still inside the controller's request Reactor Context (populated by
@@ -65,9 +66,28 @@ public class RunService {
                 .flatMap(maybeAuth -> startRunInternal(request, maybeAuth.orElse(null), sample));
     }
 
-    private Mono<Run> startRunInternal(StartRunRequest request, Authentication caller, Timer.Sample sample) {
+    private Mono<StartRunOutcome> startRunInternal(
+            StartRunRequest request, Authentication caller, Timer.Sample sample) {
         return Mono.fromCallable(
                         () -> {
+                            String idempotencyKey =
+                                    request.idempotencyKey() != null
+                                                    && !request.idempotencyKey().isBlank()
+                                            ? request.idempotencyKey().trim()
+                                            : null;
+                            if (idempotencyKey != null) {
+                                Optional<Run> existing =
+                                        store.findRunByIdempotencyKey(idempotencyKey);
+                                if (existing.isPresent()) {
+                                    Run run = existing.get();
+                                    log.info(
+                                            "Run start deduplicated by idempotencyKey runId={} workflowId={}",
+                                            run.id(),
+                                            run.workflowId());
+                                    return new StartRunOutcome(run, false);
+                                }
+                            }
+
                             Instant now = Instant.now();
                             UUID runId = UUID.randomUUID();
                             String workflowId = request.workflowId().trim();
@@ -78,6 +98,9 @@ public class RunService {
                             String input = request.input().trim();
                             Map<String, Object> metadata = new HashMap<>(request.metadata());
                             metadata.put("input", input);
+                            if (idempotencyKey != null) {
+                                metadata.put("idempotencyKey", idempotencyKey);
+                            }
 
                             Run run =
                                     new Run(
@@ -90,7 +113,24 @@ public class RunService {
                                             null,
                                             null,
                                             metadata);
-                            store.saveRun(run);
+                            try {
+                                store.saveRun(run);
+                            } catch (DataIntegrityViolationException e) {
+                                // Lost the race against a concurrent start with the same
+                                // idempotency key: the partial unique index rejected our insert.
+                                // Return the winner instead of failing the caller.
+                                if (idempotencyKey != null) {
+                                    Run winner =
+                                            store.findRunByIdempotencyKey(idempotencyKey)
+                                                    .orElseThrow(() -> e);
+                                    log.info(
+                                            "Run start deduplicated after insert race runId={} workflowId={}",
+                                            winner.id(),
+                                            winner.workflowId());
+                                    return new StartRunOutcome(winner, false);
+                                }
+                                throw e;
+                            }
                             Run running = run.withStatus(RunStatus.RUNNING, Instant.now()).withStartedAt(now);
                             store.saveRun(running);
 
@@ -118,16 +158,18 @@ public class RunService {
                                         workflowId,
                                         correlationId,
                                         executor);
-                                return store.findRun(runId).orElse(running);
+                                return new StartRunOutcome(store.findRun(runId).orElse(running), true);
                             } finally {
                                 RunLogContext.clearRun();
                             }
                         })
                 .subscribeOn(Schedulers.boundedElastic())
                 .doOnSuccess(
-                        run ->
+                        outcome ->
                                 metrics.stopRunTimer(
-                                        sample, run.workflowId(), run.status().name()));
+                                        sample,
+                                        outcome.run().workflowId(),
+                                        outcome.run().status().name()));
     }
 
     public Mono<RunDetailResponse> getRunDetail(UUID runId) {

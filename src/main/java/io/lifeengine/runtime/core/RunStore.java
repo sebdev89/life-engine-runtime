@@ -15,6 +15,15 @@ public interface RunStore {
 
     Optional<Run> findRun(UUID runId);
 
+    /**
+     * Looks up a run previously started with the given idempotency key (stored in run metadata
+     * under {@code idempotencyKey}). Default: not supported, always empty — test doubles that do
+     * not care about idempotency inherit this.
+     */
+    default Optional<Run> findRunByIdempotencyKey(String idempotencyKey) {
+        return Optional.empty();
+    }
+
     void appendEvent(RuntimeEvent event);
 
     List<RuntimeEvent> eventsFor(UUID runId);

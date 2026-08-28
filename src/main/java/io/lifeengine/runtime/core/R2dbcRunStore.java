@@ -55,19 +55,20 @@ public class R2dbcRunStore implements RunStore {
             """
             INSERT INTO runtime_run (
                 id, status, workflow_id, correlation_id, created_at, updated_at,
-                started_at, finished_at, metadata
+                started_at, finished_at, metadata, idempotency_key
             ) VALUES (
                 :id, :status, :workflow_id, :correlation_id, :created_at, :updated_at,
-                :started_at, :finished_at, :metadata
+                :started_at, :finished_at, :metadata, :idempotency_key
             )
             ON CONFLICT (id) DO UPDATE SET
-                status         = EXCLUDED.status,
-                workflow_id    = EXCLUDED.workflow_id,
-                correlation_id = EXCLUDED.correlation_id,
-                updated_at     = EXCLUDED.updated_at,
-                started_at     = EXCLUDED.started_at,
-                finished_at    = EXCLUDED.finished_at,
-                metadata       = EXCLUDED.metadata
+                status          = EXCLUDED.status,
+                workflow_id     = EXCLUDED.workflow_id,
+                correlation_id  = EXCLUDED.correlation_id,
+                updated_at      = EXCLUDED.updated_at,
+                started_at      = EXCLUDED.started_at,
+                finished_at     = EXCLUDED.finished_at,
+                metadata        = EXCLUDED.metadata,
+                idempotency_key = EXCLUDED.idempotency_key
             """;
 
     private static final String FIND_RUN_SQL =
@@ -76,6 +77,14 @@ public class R2dbcRunStore implements RunStore {
                    started_at, finished_at, metadata
             FROM runtime_run
             WHERE id = :id
+            """;
+
+    private static final String FIND_RUN_BY_IDEMPOTENCY_KEY_SQL =
+            """
+            SELECT id, status, workflow_id, correlation_id, created_at, updated_at,
+                   started_at, finished_at, metadata
+            FROM runtime_run
+            WHERE idempotency_key = :idempotency_key
             """;
 
     private static final String INSERT_EVENT_SQL =
@@ -155,10 +164,32 @@ public class R2dbcRunStore implements RunStore {
                 .bind("started_at", Parameters.in(R2dbcType.TIMESTAMP_WITH_TIME_ZONE, run.startedAt()))
                 .bind("finished_at", Parameters.in(R2dbcType.TIMESTAMP_WITH_TIME_ZONE, run.finishedAt()))
                 .bind("metadata", jsonOf(run.metadata()))
+                .bind("idempotency_key", Parameters.in(R2dbcType.VARCHAR, idempotencyKeyOf(run)))
                 .fetch()
                 .rowsUpdated()
                 .then()
                 .block(BLOCK_TIMEOUT);
+    }
+
+    private static String idempotencyKeyOf(Run run) {
+        Object key = run.metadata().get("idempotencyKey");
+        return key instanceof String text && !text.isBlank() ? text : null;
+    }
+
+    @Override
+    public Optional<Run> findRunByIdempotencyKey(String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return Optional.empty();
+        }
+        Run run =
+                databaseClient
+                        .sql(FIND_RUN_BY_IDEMPOTENCY_KEY_SQL)
+                        .bind("idempotency_key", idempotencyKey)
+                        .map((row, meta) -> mapRun(row))
+                        .one()
+                        .blockOptional(BLOCK_TIMEOUT)
+                        .orElse(null);
+        return Optional.ofNullable(run);
     }
 
     @Override
