@@ -37,16 +37,20 @@ jobs:
           java-version: 21
           cache: maven
 
+      # ./mvnw y no mvn: `ubuntu-latest` trae Maven preinstalado, un runner
+      # self-hosted pelado no, y el `mvn` de esta maquina vive en el sdkman de
+      # `sebas` —bajo /home/sebas, 0750— asi que `le-ci` no lo alcanza por diseño.
+      # Reproducido: exit 127 `mvn: command not found` en el run 33229304678.
       - name: Show toolchain
         run: |
           java -version
-          mvn -v
+          ./mvnw -v
 
       # ---------------------------------------------------------------------------
       # Compile gate — fast feedback before the test lane runs.
       # ---------------------------------------------------------------------------
       - name: Compile (main + test sources)
-        run: mvn -B -ntp -DskipTests test-compile
+        run: ./mvnw -B -ntp -DskipTests test-compile
 
       # ---------------------------------------------------------------------------
       # Default test lane.
@@ -73,7 +77,7 @@ jobs:
           }
 
       - name: Run tests (mvn test)
-        run: mvn -B -ntp test
+        run: ./mvnw -B -ntp test
 
       # ---------------------------------------------------------------------------
       # On failure: publish Surefire reports so the failing test, stack trace, and
