@@ -6,6 +6,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.security.config.web.server.SecurityWebFiltersOrder;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
 import org.springframework.security.web.server.SecurityWebFilterChain;
 import org.springframework.security.web.server.ServerAuthenticationEntryPoint;
@@ -25,17 +27,35 @@ public class RuntimeSecurityConfig {
 
     @Bean
     SecurityWebFilterChain runtimeSecurityWebFilterChain(
-            ServerHttpSecurity http, RuntimeSecurityProperties securityProperties) {
+            ServerHttpSecurity http,
+            RuntimeSecurityProperties securityProperties,
+            RuntimeJwtService jwtService,
+            ObjectMapper objectMapper) {
         if (!securityProperties.enabled()) {
             return http.csrf(ServerHttpSecurity.CsrfSpec::disable)
                     .cors(Customizer.withDefaults())
                     .authorizeExchange(ex -> ex.anyExchange().permitAll())
                     .build();
         }
+        // KAN-264 — el filtro JWT se instala DENTRO de esta cadena, en la posición AUTHENTICATION.
+        //
+        // Antes era un `@Component` con `@Order(HIGHEST_PRECEDENCE + 10)`, o sea un WebFilter de la
+        // cadena GLOBAL de WebFlux: corría por fuera del WebFilterChainProxy y lo envolvía entero.
+        // Con esa disposición, una AccessDeniedException levantada por AuthorizationWebFilter no
+        // llegaba a renderizarse y la respuesta salía 200 con cuerpo vacío en lugar de 403 — un
+        // rechazo de autorización indistinguible de un éxito sin datos para cualquier cliente.
+        //
+        // Adentro y en AUTHENTICATION queda por debajo de ExceptionTranslationWebFilter, que es el
+        // que traduce la denegación al 403 de `jsonAccessDenied()`.
+        //
+        // El filtro ya NO lleva `@Component`: si se lo devolviera, correría dos veces —una acá y
+        // otra en la cadena global— y el defecto volvería.
+        var jwtFilter = new RuntimeJwtAuthenticationWebFilter(jwtService, securityProperties, objectMapper);
         return http.csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .cors(Customizer.withDefaults())
                 .httpBasic(ServerHttpSecurity.HttpBasicSpec::disable)
                 .formLogin(ServerHttpSecurity.FormLoginSpec::disable)
+                .addFilterAt(jwtFilter, SecurityWebFiltersOrder.AUTHENTICATION)
                 .exceptionHandling(
                         ex ->
                                 ex.authenticationEntryPoint(jsonEntryPoint())
