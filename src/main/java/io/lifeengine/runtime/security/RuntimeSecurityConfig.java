@@ -41,15 +41,18 @@ public class RuntimeSecurityConfig {
         //
         // Antes era un `@Component` con `@Order(HIGHEST_PRECEDENCE + 10)`, o sea un WebFilter de la
         // cadena GLOBAL de WebFlux: corría por fuera del WebFilterChainProxy y lo envolvía entero.
-        // Con esa disposición, una AccessDeniedException levantada por AuthorizationWebFilter no
-        // llegaba a renderizarse y la respuesta salía 200 con cuerpo vacío en lugar de 403 — un
-        // rechazo de autorización indistinguible de un éxito sin datos para cualquier cliente.
-        //
         // Adentro y en AUTHENTICATION queda por debajo de ExceptionTranslationWebFilter, que es el
-        // que traduce la denegación al 403 de `jsonAccessDenied()`.
+        // que traduce la denegación al 403 de `jsonAccessDenied()`. Esa es la posición que Spring
+        // Security espera de un filtro de autenticación.
         //
-        // El filtro ya NO lleva `@Component`: si se lo devolviera, correría dos veces —una acá y
-        // otra en la cadena global— y el defecto volvería.
+        // ESTA DISPOSICIÓN NO ERA LA CAUSA del 200-con-cuerpo-vacío. Se investigó como hipótesis y
+        // se REFUTÓ con un A/B de dos contenedores: con el filtro adentro y con el filtro afuera,
+        // los dos devolvían 200 vacío. La causa real está más abajo, en los handlers que fijaban el
+        // estado y cerraban la respuesta sin escribir cuerpo.
+        //
+        // El refactor se conserva por su propio mérito —posición correcta— y porque evita la doble
+        // registración: si se le devolviera `@Component`, el filtro correría dos veces, una acá y
+        // otra en la cadena global.
         var jwtFilter = new RuntimeJwtAuthenticationWebFilter(jwtService, securityProperties, objectMapper);
         return http.csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .cors(Customizer.withDefaults())
@@ -58,8 +61,8 @@ public class RuntimeSecurityConfig {
                 .addFilterAt(jwtFilter, SecurityWebFiltersOrder.AUTHENTICATION)
                 .exceptionHandling(
                         ex ->
-                                ex.authenticationEntryPoint(jsonEntryPoint())
-                                        .accessDeniedHandler(jsonAccessDenied()))
+                                ex.authenticationEntryPoint(jsonEntryPoint(objectMapper))
+                                        .accessDeniedHandler(jsonAccessDenied(objectMapper)))
                 .authorizeExchange(
                         auth ->
                                 auth
@@ -96,17 +99,59 @@ public class RuntimeSecurityConfig {
                 .build();
     }
 
-    private static ServerAuthenticationEntryPoint jsonEntryPoint() {
-        return (exchange, ex) -> {
-            exchange.getResponse().setStatusCode(org.springframework.http.HttpStatus.UNAUTHORIZED);
-            return exchange.getResponse().setComplete();
-        };
+    /**
+     * KAN-264 — estos handlers escriben un CUERPO, no solo un estado.
+     *
+     * <p>Antes hacian {@code setStatusCode(...)} seguido de {@code setComplete()}, sin cuerpo. Con
+     * esa forma, una denegacion de autorizacion salia como <b>200 con cuerpo vacio</b>: para cuando
+     * el handler corria, la respuesta ya estaba en estado de commit y el estado nuevo no llegaba al
+     * cable. Medido en UAT: {@code applied=true committed=true status=403 FORBIDDEN} sobre el
+     * objeto, y 200 en el cliente.
+     *
+     * <p>El camino que si funcionaba era el 401 que el propio filtro JWT escribe con
+     * {@code writeWith(...)} y un cuerpo JSON. Estos handlers ahora hacen lo mismo, con el mismo
+     * contrato {@code {code, message}} que devuelve el resto de la API.
+     *
+     * <p>No es cosmetico: un cliente no puede distinguir un 200 vacio de un exito sin datos, asi
+     * que una denegacion silenciosa se lee como permitida. Es la misma familia que KAN-250.
+     */
+    private static ServerAuthenticationEntryPoint jsonEntryPoint(ObjectMapper objectMapper) {
+        return (exchange, ex) ->
+                writeJsonError(
+                        exchange,
+                        objectMapper,
+                        org.springframework.http.HttpStatus.UNAUTHORIZED,
+                        "unauthorized",
+                        "Authentication required");
     }
 
-    private static ServerAccessDeniedHandler jsonAccessDenied() {
-        return (exchange, denied) -> {
-            exchange.getResponse().setStatusCode(org.springframework.http.HttpStatus.FORBIDDEN);
-            return exchange.getResponse().setComplete();
-        };
+    private static Mono<Void> writeJsonError(
+            org.springframework.web.server.ServerWebExchange exchange,
+            ObjectMapper objectMapper,
+            org.springframework.http.HttpStatus status,
+            String code,
+            String message) {
+        var response = exchange.getResponse();
+        response.setStatusCode(status);
+        response.getHeaders().setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+        try {
+            byte[] body =
+                    objectMapper.writeValueAsBytes(java.util.Map.of("code", code, "message", message));
+            return response.writeWith(Mono.just(response.bufferFactory().wrap(body)));
+        } catch (Exception ex) {
+            // Serializar dos claves fijas no puede fallar, pero si fallara es preferible un estado
+            // sin cuerpo antes que propagar un error que terminaria en 500 y ocultaria la denegacion.
+            return response.setComplete();
+        }
+    }
+
+    private static ServerAccessDeniedHandler jsonAccessDenied(ObjectMapper objectMapper) {
+        return (exchange, denied) ->
+                writeJsonError(
+                        exchange,
+                        objectMapper,
+                        org.springframework.http.HttpStatus.FORBIDDEN,
+                        "forbidden",
+                        "Insufficient authority");
     }
 }

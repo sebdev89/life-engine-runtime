@@ -28,6 +28,17 @@ import org.springframework.test.web.reactive.server.WebTestClient;
  *   <li>autenticado con la authority correcta → respuesta normal
  *   <li>autenticado sin la authority → <b>403</b>, nunca 200
  * </ul>
+ *
+ * <p><b>Por qué cada aserción exige además el CUERPO.</b> El defecto venía de handlers que hacían
+ * {@code setStatusCode(...)} seguido de {@code setComplete()}, sin escribir nada. Con esa forma el
+ * estado nuevo no llegaba al cable y salía 200 vacío. Exigir sólo el código de estado no alcanza
+ * como red: este harness renderizaba 403 correctamente incluso ANTES del arreglo, así que un test
+ * que sólo mirara el status pasaba con el bug presente. La aserción sobre {@code $.code} sí falla
+ * si alguien vuelve a {@code setComplete()}, porque ese camino no produce cuerpo.
+ *
+ * <p>Dicho con todas las letras: estos tests protegen contra una regresión de la implementación,
+ * NO reproducen el fallo original. La única verificación que lo detecta es una petición real contra
+ * el servicio desplegado.
  */
 @SpringBootTest(classes = RuntimeApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureWebTestClient
@@ -59,7 +70,7 @@ class RuntimeDenialSemanticsTest {
     @Autowired private WebTestClient webTestClient;
 
     @Test
-    @DisplayName("OPERATOR real sin RUNTIME_ADMIN contra /actuator/metrics → 403, no 200 vacío")
+    @DisplayName("OPERATOR real sin RUNTIME_ADMIN contra /actuator/metrics → 403 CON cuerpo")
     void operatorTokenWithoutAdminAuthority_returns403() {
         webTestClient
                 .get()
@@ -67,11 +78,14 @@ class RuntimeDenialSemanticsTest {
                 .header("Authorization", RuntimeTestJwt.bearerForPlatformRole("OPERATOR", OPERATOR_AUTHORITIES))
                 .exchange()
                 .expectStatus()
-                .isForbidden();
+                .isForbidden()
+                .expectBody()
+                .jsonPath("$.code")
+                .isEqualTo("forbidden");
     }
 
     @Test
-    @DisplayName("USER real sin RUNTIME_OPERATOR contra POST /api/runtime/runs → 403, no 200 vacío")
+    @DisplayName("USER real sin RUNTIME_OPERATOR contra POST /api/runtime/runs → 403 CON cuerpo")
     void userTokenWithoutOperatorAuthority_returns403() {
         webTestClient
                 .post()
@@ -80,13 +94,39 @@ class RuntimeDenialSemanticsTest {
                 .bodyValue("{}")
                 .exchange()
                 .expectStatus()
-                .isForbidden();
+                .isForbidden()
+                .expectBody()
+                .jsonPath("$.code")
+                .isEqualTo("forbidden");
     }
 
     @Test
-    @DisplayName("Sin token → 401")
+    @DisplayName("Ruta sin regla explícita cae en denyAll → 403 CON cuerpo")
+    void unmatchedPath_returns403() {
+        webTestClient
+                .get()
+                .uri("/no-existe")
+                .header("Authorization", RuntimeTestJwt.bearerForPlatformRole("OPERATOR", OPERATOR_AUTHORITIES))
+                .exchange()
+                .expectStatus()
+                .isForbidden()
+                .expectBody()
+                .jsonPath("$.code")
+                .isEqualTo("forbidden");
+    }
+
+    @Test
+    @DisplayName("Sin token → 401 CON cuerpo")
     void noToken_returns401() {
-        webTestClient.get().uri("/actuator/metrics").exchange().expectStatus().isUnauthorized();
+        webTestClient
+                .get()
+                .uri("/actuator/metrics")
+                .exchange()
+                .expectStatus()
+                .isUnauthorized()
+                .expectBody()
+                .jsonPath("$.code")
+                .isEqualTo("unauthorized");
     }
 
     @Test

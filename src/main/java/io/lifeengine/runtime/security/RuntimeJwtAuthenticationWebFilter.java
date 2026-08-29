@@ -25,17 +25,20 @@ import reactor.core.scheduler.Schedulers;
  *
  * <p>Cualquier bean de tipo {@link WebFilter} se agrega automáticamente a la cadena GLOBAL de
  * WebFlux. Estando ahí, con {@code @Order(HIGHEST_PRECEDENCE + 10)}, corría <b>por fuera</b> del
- * {@code WebFilterChainProxy} de Spring Security y envolvía toda su cadena. Con esa disposición,
- * una {@code AccessDeniedException} levantada por {@code AuthorizationWebFilter} no llegaba a
- * renderizarse: la respuesta salía <b>200 con cuerpo vacío</b> en lugar de 403.
- *
- * <p>Ahora lo construye {@link RuntimeSecurityConfig} y lo instala con
+ * {@code WebFilterChainProxy} de Spring Security y envolvía toda su cadena. Ahora lo construye
+ * {@link RuntimeSecurityConfig} y lo instala con
  * {@code addFilterAt(..., SecurityWebFiltersOrder.AUTHENTICATION)}, que es donde Spring Security
  * espera un filtro de autenticación: dentro de la cadena y por debajo de
- * {@code ExceptionTranslationWebFilter}, que es quien traduce la denegación a 403.
+ * {@code ExceptionTranslationWebFilter}, que es quien traduce una denegación a 403.
  *
- * <p>Quitar {@code @Component} no es cosmético: si se lo devolviera, el filtro correría DOS veces
- * —una en la cadena global y otra en la de seguridad— y volvería el defecto.
+ * <p><b>Esta disposición no era la causa</b> del defecto de KAN-264 —una denegación que salía como
+ * 200 con cuerpo vacío—. Se investigó como hipótesis y se refutó con un A/B de dos contenedores:
+ * dentro y fuera de la cadena, los dos devolvían 200 vacío. La causa estaba en los handlers de
+ * {@code RuntimeSecurityConfig}, que fijaban el estado y cerraban la respuesta sin escribir cuerpo.
+ *
+ * <p>El cambio se conserva porque es la posición correcta y porque evita la doble registración: si
+ * se le devolviera {@code @Component}, el filtro correría DOS veces, una en la cadena global y otra
+ * en la de seguridad.
  */
 public class RuntimeJwtAuthenticationWebFilter implements WebFilter {
 
