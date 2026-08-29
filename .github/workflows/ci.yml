@@ -16,7 +16,14 @@ concurrency:
 jobs:
   build-and-test:
     name: build + test (java 21, ubuntu)
-    runs-on: ubuntu-latest
+    # Runner propio, usuario `le-ci` — sin grupo docker, sin acceso a prod/.
+    #
+    # Nota para quien lea esto mas adelante: este repo es PUBLICO, asi que en los
+    # runners de GitHub corre gratis e ilimitado y es el unico de la plataforma cuyo
+    # CI nunca se cayo por facturacion. Se mueve igual para que los cuatro repos del
+    # lane compartan runner y politica, y porque asi el fallback queda probado: si el
+    # host se cae, volver a los runners de GitHub en este repo es gratis de verdad.
+    runs-on: [self-hosted, le-ci]
     timeout-minutes: 25
 
     steps:
@@ -30,16 +37,20 @@ jobs:
           java-version: 21
           cache: maven
 
+      # ./mvnw y no mvn: `ubuntu-latest` trae Maven preinstalado, un runner
+      # self-hosted pelado no, y el `mvn` de esta maquina vive en el sdkman de
+      # `sebas` —bajo /home/sebas, 0750— asi que `le-ci` no lo alcanza por diseño.
+      # Reproducido: exit 127 `mvn: command not found` en el run 33229304678.
       - name: Show toolchain
         run: |
           java -version
-          mvn -v
+          ./mvnw -v
 
       # ---------------------------------------------------------------------------
       # Compile gate — fast feedback before the test lane runs.
       # ---------------------------------------------------------------------------
       - name: Compile (main + test sources)
-        run: mvn -B -ntp -DskipTests test-compile
+        run: ./mvnw -B -ntp -DskipTests test-compile
 
       # ---------------------------------------------------------------------------
       # Default test lane.
@@ -50,13 +61,23 @@ jobs:
       #
       # The R2DBC integration test (R2dbcRunStoreTest) starts an ephemeral
       # postgres:16-alpine via Testcontainers when a Docker daemon is reachable.
-      # GitHub-hosted ubuntu-latest runners ship Docker, so this lane exercises the
-      # full persistence path. On runners without Docker (rare), Testcontainers
-      # fails fast — we do NOT silently skip; an opt-out is a deliberate, separate
-      # workflow change rather than an accidental green build.
+      # En los runners de GitHub el daemon venia dado. En el runner `le-ci` el unico
+      # daemon accesible es su Docker rootless: DOCKER_HOST lo inyecta la unidad
+      # systemd del runner y Testcontainers lo autodetecta por XDG_RUNTIME_DIR.
+      # Testcontainers falla rapido si no hay daemon — NO se saltea en silencio; un
+      # opt-out seria un cambio deliberado de workflow y no un verde accidental.
       # ---------------------------------------------------------------------------
+      - name: Verificar que el daemon disponible es el rootless
+        run: |
+          echo "DOCKER_HOST=${DOCKER_HOST:-<no seteado>}"
+          docker info --format 'root dir: {{.DockerRootDir}} · {{.SecurityOptions}}'
+          docker info --format '{{.SecurityOptions}}' | grep -q 'name=rootless' || {
+            echo "::error::el daemon visible no es rootless — Testcontainers no debe correr acá"
+            exit 1
+          }
+
       - name: Run tests (mvn test)
-        run: mvn -B -ntp test
+        run: ./mvnw -B -ntp test
 
       # ---------------------------------------------------------------------------
       # On failure: publish Surefire reports so the failing test, stack trace, and
@@ -75,7 +96,7 @@ jobs:
 
   docker-publish:
     name: docker build + push
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, le-ci]
     needs: build-and-test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
