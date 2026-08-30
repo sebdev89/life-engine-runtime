@@ -1,6 +1,7 @@
 package io.lifeengine.runtime.core;
 
 import io.lifeengine.runtime.domain.AgentStageRecord;
+import io.lifeengine.runtime.domain.EventSequence;
 import io.lifeengine.runtime.domain.Run;
 import io.lifeengine.runtime.domain.RuntimeEvent;
 import io.lifeengine.runtime.llm.LlmCallRecord;
@@ -10,6 +11,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -23,6 +25,12 @@ public class InMemoryRunStore implements RunStore {
     private final ConcurrentHashMap<UUID, CopyOnWriteArrayList<LlmCallRecord>> llmCallsByRun =
             new ConcurrentHashMap<>();
 
+    /**
+     * Equivalente en memoria de la secuencia de Postgres: global, no por run. Sólo se le pide
+     * monotonía dentro de cada run, que es lo único que el orden necesita.
+     */
+    private final AtomicLong seqGenerator = new AtomicLong();
+
     @Override
     public void saveRun(Run run) {
         runs.put(run.id(), run);
@@ -35,10 +43,29 @@ public class InMemoryRunStore implements RunStore {
     }
 
     @Override
-    public void appendEvent(RuntimeEvent event) {
-        eventsByRun
-                .computeIfAbsent(event.runId(), id -> new CopyOnWriteArrayList<>())
-                .add(event);
+    public RuntimeEvent appendEvent(RuntimeEvent event) {
+        CopyOnWriteArrayList<RuntimeEvent> list =
+                eventsByRun.computeIfAbsent(event.runId(), id -> new CopyOnWriteArrayList<>());
+        // Idempotencia por eventId, igual que el store R2DBC: reintentar no duplica y devuelve el
+        // seq original. Sin esto, los tests que comparten backend verían comportamientos distintos
+        // según la persistencia, que es justo lo que un doble de test no debe hacer.
+        for (RuntimeEvent existing : list) {
+            if (existing.eventId().equals(event.eventId())) {
+                return existing;
+            }
+        }
+        RuntimeEvent stored = event.withSeq(EventSequence.of(seqGenerator.incrementAndGet()));
+        list.add(stored);
+        return stored;
+    }
+
+    @Override
+    public RuntimeEvent appendEventAndSaveRun(RuntimeEvent event, Run run) {
+        // No hay transacción real en memoria. El orden sí se respeta —evento primero— y con eso
+        // alcanza para que los tests que verifican la invariante corran contra este backend.
+        RuntimeEvent stored = appendEvent(event);
+        saveRun(run);
+        return stored;
     }
 
     @Override

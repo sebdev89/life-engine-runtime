@@ -31,6 +31,12 @@ import reactor.core.publisher.Sinks;
 @Component
 public class RunEventPublisher {
 
+    private final io.lifeengine.runtime.observability.RuntimeMetrics metrics;
+
+    public RunEventPublisher(io.lifeengine.runtime.observability.RuntimeMetrics metrics) {
+        this.metrics = metrics;
+    }
+
     private final ConcurrentHashMap<UUID, Sinks.Many<RuntimeEvent>> sinks = new ConcurrentHashMap<>();
 
     /**
@@ -44,6 +50,7 @@ public class RunEventPublisher {
             Sinks.many().multicast().directBestEffort();
 
     public void publish(RuntimeEvent event) {
+        metrics.recordEventAppended(event.attributes().get("workflowId"));
         sinkFor(event.runId()).tryEmitNext(event);
         globalSink.tryEmitNext(event);
     }

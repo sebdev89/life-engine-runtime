@@ -17,7 +17,9 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.r2dbc.connection.R2dbcTransactionManager;
 import org.springframework.r2dbc.core.DatabaseClient;
+import org.springframework.transaction.reactive.TransactionalOperator;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -68,7 +70,11 @@ class RunTenantPersistenceTest {
                                 .option(ConnectionFactoryOptions.USER, POSTGRES.getUsername())
                                 .option(ConnectionFactoryOptions.PASSWORD, POSTGRES.getPassword())
                                 .build());
-        store = new R2dbcRunStore(DatabaseClient.create(connectionFactory), new ObjectMapper());
+        store =
+                new R2dbcRunStore(
+                        DatabaseClient.create(connectionFactory),
+                        new ObjectMapper(),
+                        TransactionalOperator.create(new R2dbcTransactionManager(connectionFactory)));
     }
 
     @AfterAll

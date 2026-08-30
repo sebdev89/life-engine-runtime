@@ -68,7 +68,7 @@ class EventLoopBlockingSafetyTest {
     void llmFailureFromNonBlockingThread_neverInvokesRunStoreOnNonBlockingThread()
             throws InterruptedException {
         ThreadAuditingRunStore store = new ThreadAuditingRunStore(new InMemoryRunStore());
-        RunEventPublisher eventPublisher = new RunEventPublisher();
+        RunEventPublisher eventPublisher = new RunEventPublisher(new io.lifeengine.runtime.observability.RuntimeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
         NonBlockingErrorLlmClient llm = new NonBlockingErrorLlmClient();
         AgentRegistry agentRegistry = new AgentRegistry(List.of(new FailingLlmAgent(llm)));
         ToolRegistry toolRegistry = new ToolRegistry(List.of());
@@ -119,9 +119,12 @@ class EventLoopBlockingSafetyTest {
         List<RuntimeEvent> events = store.eventsFor(runId);
         List<String> types = events.stream().map(RuntimeEvent::type).toList();
         Assertions.assertThat(types)
+                // RUN_STARTED ya no se espera acá: este test invoca al executor en aislamiento, y
+                // desde F1 ese evento lo escribe RunService junto con la transición a RUNNING, en
+                // una sola transacción. El camino real sigue cubierto por los tests que entran por
+                // la API (LlmWorkflowHappyPathTest, LlmWorkflowWebFluxTest).
                 .as("expected lifecycle including terminal RUN_FAILED")
                 .containsSubsequence(
-                        "RUN_STARTED",
                         "STAGE_STARTED",
                         "AGENT_STARTED",
                         "LLM_CALL_STARTED",
@@ -193,9 +196,15 @@ class EventLoopBlockingSafetyTest {
         }
 
         @Override
-        public void appendEvent(RuntimeEvent event) {
+        public RuntimeEvent appendEvent(RuntimeEvent event) {
             record("appendEvent[" + event.type() + "]");
-            delegate.appendEvent(event);
+            return delegate.appendEvent(event);
+        }
+
+        @Override
+        public RuntimeEvent appendEventAndSaveRun(RuntimeEvent event, Run run) {
+            record("appendEventAndSaveRun[" + event.type() + "]");
+            return delegate.appendEventAndSaveRun(event, run);
         }
 
         @Override

@@ -4,8 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.core.Ordered;
-import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -13,16 +11,35 @@ import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
-import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-/** Validates Bearer JWT (life-engine format) before Spring Security authorization. */
-@Component
-@Order(Ordered.HIGHEST_PRECEDENCE + 10)
+/**
+ * Valida un Bearer JWT (formato life-engine) y publica la {@code Authentication} para que la
+ * autorización de Spring Security decida sobre ella.
+ *
+ * <p>KAN-264 — este filtro ya NO se registra como {@code @Component}.
+ *
+ * <p>Cualquier bean de tipo {@link WebFilter} se agrega automáticamente a la cadena GLOBAL de
+ * WebFlux. Estando ahí, con {@code @Order(HIGHEST_PRECEDENCE + 10)}, corría <b>por fuera</b> del
+ * {@code WebFilterChainProxy} de Spring Security y envolvía toda su cadena. Ahora lo construye
+ * {@link RuntimeSecurityConfig} y lo instala con
+ * {@code addFilterAt(..., SecurityWebFiltersOrder.AUTHENTICATION)}, que es donde Spring Security
+ * espera un filtro de autenticación: dentro de la cadena y por debajo de
+ * {@code ExceptionTranslationWebFilter}, que es quien traduce una denegación a 403.
+ *
+ * <p><b>Esta disposición no era la causa</b> del defecto de KAN-264 —una denegación que salía como
+ * 200 con cuerpo vacío—. Se investigó como hipótesis y se refutó con un A/B de dos contenedores:
+ * dentro y fuera de la cadena, los dos devolvían 200 vacío. La causa estaba en los handlers de
+ * {@code RuntimeSecurityConfig}, que fijaban el estado y cerraban la respuesta sin escribir cuerpo.
+ *
+ * <p>El cambio se conserva porque es la posición correcta y porque evita la doble registración: si
+ * se le devolviera {@code @Component}, el filtro correría DOS veces, una en la cadena global y otra
+ * en la de seguridad.
+ */
 public class RuntimeJwtAuthenticationWebFilter implements WebFilter {
 
     private static final Logger log = LoggerFactory.getLogger(RuntimeJwtAuthenticationWebFilter.class);

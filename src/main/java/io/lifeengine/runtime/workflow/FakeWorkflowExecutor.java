@@ -56,7 +56,8 @@ public class FakeWorkflowExecutor {
         cancelFlags.put(runId, new AtomicBoolean(false));
         Disposable disposable =
                 Flux.concat(
-                                step(runId, correlationId, EventType.RUN_STARTED, Map.of(), false),
+                                // RUN_STARTED lo escribe RunService con la transición a RUNNING, en
+                                // una sola transacción (ADR-RT-003). Emitirlo acá lo duplicaría.
                                 step(
                                         runId,
                                         correlationId,
@@ -119,9 +120,13 @@ public class FakeWorkflowExecutor {
                             attrs.put("correlationId", correlationId);
                             attrs.putAll(attributes);
                             RuntimeEvent event = RuntimeEvent.of(runId, type.wireName(), attrs, terminal);
-                            store.appendEvent(event);
-                            eventPublisher.publish(event);
-                            return Mono.just(event);
+                            // Se publica el evento QUE VOLVIÓ del store: es el único con seq.
+                            // Publicar el de entrada mandaba seq=0, y como el sink vivo llega
+                            // antes que el replay, la copia sin número marcaba el eventId en
+                            // `seen` y la copia numerada del store se descartaba como duplicada.
+                            RuntimeEvent stored = store.appendEvent(event);
+                            eventPublisher.publish(stored);
+                            return Mono.just(stored);
                         })
                 // delayElement() without an explicit scheduler routes through
                 // Schedulers.parallel(), which is a NonBlocking scheduler. Subsequent
@@ -150,20 +155,23 @@ public class FakeWorkflowExecutor {
             return;
         }
         Instant now = Instant.now();
-        store.findRun(runId)
-                .ifPresent(
-                        run -> {
-                            Run updated = run.withStatus(RunStatus.FAILED, now);
-                            store.saveRun(updated);
-                        });
         RuntimeEvent failed =
                 RuntimeEvent.of(
                         runId,
                         EventType.RUN_FAILED.wireName(),
                         Map.of("error", err.getMessage() == null ? err.toString() : err.getMessage()),
                         true);
-        store.appendEvent(failed);
-        eventPublisher.publish(failed);
+        // Evento antes que estado, en una transacción (ADR-RT-003). Estaba al revés: se guardaba
+        // FAILED y recién después el evento, o sea el mismo patrón que motivó el bloqueante — y
+        // encima distinto de lo que hace DefinitionDrivenWorkflowExecutor.failRun ante la misma
+        // invariante.
+        store.findRun(runId)
+                .ifPresentOrElse(
+                        run ->
+                                eventPublisher.publish(
+                                        store.appendEventAndSaveRun(
+                                                failed, run.withStatus(RunStatus.FAILED, now))),
+                        () -> eventPublisher.publish(store.appendEvent(failed)));
         cancelFlags.remove(runId);
         log.warn("Fake workflow failed runId={} msg={}", runId, err.toString());
     }

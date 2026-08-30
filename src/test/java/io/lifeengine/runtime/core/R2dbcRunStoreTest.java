@@ -1,6 +1,7 @@
 package io.lifeengine.runtime.core;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,7 +23,9 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.r2dbc.connection.R2dbcTransactionManager;
 import org.springframework.r2dbc.core.DatabaseClient;
+import org.springframework.transaction.reactive.TransactionalOperator;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -50,6 +53,7 @@ class R2dbcRunStoreTest {
                     .withPassword("life");
 
     private static DatabaseClient databaseClient;
+    private static TransactionalOperator transactionalOperator;
     private static R2dbcRunStore store;
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
@@ -78,7 +82,9 @@ class R2dbcRunStoreTest {
                                 .option(ConnectionFactoryOptions.PASSWORD, POSTGRES.getPassword())
                                 .build());
         databaseClient = DatabaseClient.create(connectionFactory);
-        store = new R2dbcRunStore(databaseClient, OBJECT_MAPPER);
+        transactionalOperator =
+                TransactionalOperator.create(new R2dbcTransactionManager(connectionFactory));
+        store = new R2dbcRunStore(databaseClient, OBJECT_MAPPER, transactionalOperator);
     }
 
     @AfterAll
@@ -191,6 +197,85 @@ class R2dbcRunStoreTest {
         store.appendEvent(event);
 
         assertThat(store.eventsFor(run.id())).hasSize(1);
+    }
+
+    @Test
+    void appendEvent_returnsTheSeqAssignedByTheLog_andIsStableOnRetry() {
+        Run run = seedRun();
+        RuntimeEvent event = RuntimeEvent.of(run.id(), "RUN_STARTED", Map.of(), false);
+
+        RuntimeEvent first = store.appendEvent(event);
+        RuntimeEvent retry = store.appendEvent(event);
+
+        assertThat(first.hasSeq()).as("el store asigna el orden, no el dominio").isTrue();
+        assertThat(retry.seq())
+                .as("reintentar con el mismo eventId devuelve el seq original, no uno nuevo")
+                .isEqualTo(first.seq());
+        assertThat(store.eventsFor(run.id())).hasSize(1);
+        assertThat(store.eventsFor(run.id()).get(0).seq()).isEqualTo(first.seq());
+    }
+
+    /**
+     * Invariante de ADR-RT-003: evento y proyección son atómicos.
+     *
+     * <p>El run tiene que EXISTIR antes: {@code runtime_event.run_id} referencia a
+     * {@code runtime_run(id)}, así que con un run inexistente fallarían las dos inserciones y el
+     * test pasaría sin probar nada — pasó en la primera versión de este test.
+     *
+     * <p>Con el run ya creado, el insert del evento es válido y el que revienta es el upsert de la
+     * proyección: {@code workflow_id} es {@code VARCHAR(255)} y se le mandan 300 caracteres. Sin
+     * transacción, el evento quedaría escrito y el estado no.
+     */
+    @Test
+    void appendEventAndSaveRun_rollsBackTheEventWhenTheProjectionFails() {
+        assumeTrue(POSTGRES.isRunning(), "requiere PostgreSQL");
+        Run existing = seedRun();
+        int eventsBefore = store.eventsFor(existing.id()).size();
+
+        Run unsaveable =
+                new Run(
+                        existing.id(),
+                        RunStatus.CANCELLED,
+                        "x".repeat(300), // VARCHAR(255) → revienta el upsert
+                        existing.correlationId(),
+                        existing.tenantId(),
+                        existing.createdAt(),
+                        Instant.now(),
+                        existing.startedAt(),
+                        Instant.now(),
+                        Map.of());
+        RuntimeEvent event = RuntimeEvent.of(existing.id(), "RUN_CANCELLED", Map.of(), true);
+
+        assertThatThrownBy(() -> store.appendEventAndSaveRun(event, unsaveable))
+                .isInstanceOf(Exception.class);
+
+        assertThat(store.eventsFor(existing.id()))
+                .as("el evento se deshace con la transacción: no queda huérfano")
+                .hasSize(eventsBefore)
+                .noneMatch(e -> e.eventId().equals(event.eventId()));
+        assertThat(store.findRun(existing.id()))
+                .get()
+                .extracting(Run::status)
+                .as("y el estado siguió como estaba")
+                .isNotEqualTo(RunStatus.CANCELLED);
+    }
+
+    @Test
+    void appendEventAndSaveRun_persistsBothWhenTheProjectionSucceeds() {
+        Run run = seedRun();
+        Run cancelled = run.withStatus(RunStatus.CANCELLED, Instant.now());
+        RuntimeEvent event = RuntimeEvent.of(run.id(), "RUN_CANCELLED", Map.of(), true);
+
+        RuntimeEvent stored = store.appendEventAndSaveRun(event, cancelled);
+
+        assertThat(stored.hasSeq()).isTrue();
+        assertThat(store.eventsFor(run.id()))
+                .extracting(RuntimeEvent::type)
+                .contains("RUN_CANCELLED");
+        assertThat(store.findRun(run.id()))
+                .get()
+                .extracting(Run::status)
+                .isEqualTo(RunStatus.CANCELLED);
     }
 
     @Test
@@ -308,7 +393,8 @@ class R2dbcRunStoreTest {
         store.appendEvent(RuntimeEvent.of(runId, "RUN_SUCCEEDED", Map.of(), true));
 
         // Reader: a fresh R2dbcRunStore against the same DB (the runtime restarted).
-        R2dbcRunStore freshStore = new R2dbcRunStore(databaseClient, OBJECT_MAPPER);
+        R2dbcRunStore freshStore =
+                new R2dbcRunStore(databaseClient, OBJECT_MAPPER, transactionalOperator);
 
         assertThat(freshStore.findRun(runId)).isPresent();
         assertThat(freshStore.eventsFor(runId)).hasSize(2);

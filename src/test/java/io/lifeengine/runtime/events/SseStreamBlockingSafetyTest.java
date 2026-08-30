@@ -50,8 +50,8 @@ class SseStreamBlockingSafetyTest {
     @Test
     void streamSubscribedFromNonBlockingScheduler_neverInvokesRunStoreOnNonBlockingThread() {
         ThreadAuditingRunStore store = new ThreadAuditingRunStore(new InMemoryRunStore());
-        RunEventPublisher publisher = new RunEventPublisher();
-        RunEventStreamService service = new RunEventStreamService(store, publisher);
+        RunEventPublisher publisher = new RunEventPublisher(new io.lifeengine.runtime.observability.RuntimeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+        RunEventStreamService service = new RunEventStreamService(store, publisher, new io.lifeengine.runtime.observability.RuntimeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
 
         UUID runId = UUID.randomUUID();
         Instant now = Instant.now();
@@ -109,8 +109,8 @@ class SseStreamBlockingSafetyTest {
     @Test
     void unknownRunId_propagatesRunNotFoundFromBoundedElastic() {
         ThreadAuditingRunStore store = new ThreadAuditingRunStore(new InMemoryRunStore());
-        RunEventPublisher publisher = new RunEventPublisher();
-        RunEventStreamService service = new RunEventStreamService(store, publisher);
+        RunEventPublisher publisher = new RunEventPublisher(new io.lifeengine.runtime.observability.RuntimeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+        RunEventStreamService service = new RunEventStreamService(store, publisher, new io.lifeengine.runtime.observability.RuntimeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
         UUID missing = UUID.randomUUID();
 
         // Subscribing from parallel() is still safe — the existence check itself must hop
@@ -171,9 +171,15 @@ class SseStreamBlockingSafetyTest {
         }
 
         @Override
-        public void appendEvent(RuntimeEvent event) {
+        public RuntimeEvent appendEvent(RuntimeEvent event) {
             record("appendEvent[" + event.type() + "]");
-            delegate.appendEvent(event);
+            return delegate.appendEvent(event);
+        }
+
+        @Override
+        public RuntimeEvent appendEventAndSaveRun(RuntimeEvent event, Run run) {
+            record("appendEventAndSaveRun[" + event.type() + "]");
+            return delegate.appendEventAndSaveRun(event, run);
         }
 
         @Override

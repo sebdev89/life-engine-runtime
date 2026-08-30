@@ -4,6 +4,7 @@ import io.lifeengine.runtime.agents.AgentNotFoundException;
 import io.lifeengine.runtime.core.RunNotFoundException;
 import io.lifeengine.runtime.core.RunService;
 import io.lifeengine.runtime.core.UnknownWorkflowException;
+import io.lifeengine.runtime.domain.EventSequence;
 import io.lifeengine.runtime.tools.ToolNotFoundException;
 import io.lifeengine.runtime.events.RunEventStreamService;
 import io.lifeengine.runtime.observability.RuntimeMetrics;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
@@ -41,7 +43,17 @@ public class RuntimeRestController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public Mono<RunResponse> startRun(@Valid @RequestBody StartRunRequest request) {
-        return runService.startRun(request).map(RunResponse::from);
+        return runService
+                .startRun(request)
+                .map(RunResponse::from)
+                // KAN-250: an empty pipeline must never surface as 201 with no body —
+                // downstream clients would treat it as a silently started run.
+                .switchIfEmpty(
+                        Mono.error(
+                                () ->
+                                        new IllegalStateException(
+                                                "startRun completed empty — refusing to return"
+                                                        + " 201 with no body")));
     }
 
     @GetMapping("/{runId}")
@@ -50,15 +62,69 @@ public class RuntimeRestController {
     }
 
     @GetMapping(value = "/{runId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<RuntimeEventResponse>> streamRun(@PathVariable UUID runId) {
+    public Flux<ServerSentEvent<RuntimeEventResponse>> streamRun(
+            @PathVariable UUID runId,
+            @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId) {
         metrics.recordSseStreamOpened();
-        return eventStreamService.stream(runId);
+        LastEventId parsed = parseLastEventId(lastEventId);
+        metrics.recordStreamResume(parsed.outcome());
+        return eventStreamService.stream(runId, parsed.seq());
     }
 
     /** @deprecated Prefer {@code /stream}; kept for cockpit compatibility. */
     @GetMapping(value = "/{runId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<RuntimeEventResponse>> streamEventsLegacy(@PathVariable UUID runId) {
-        return streamRun(runId);
+    public Flux<ServerSentEvent<RuntimeEventResponse>> streamEventsLegacy(
+            @PathVariable UUID runId,
+            @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId) {
+        return streamRun(runId, lastEventId);
+    }
+
+    /**
+     * El navegador reenvía el último id recibido al reconectar. Desde ADR-RT-012 ese id es el
+     * {@code seq}.
+     *
+     * <p>Un id no numérico es {@code 400 validation_failed}, tal como SPEC-009 §2ter congela la
+     * semántica de error. Eso incluye el UUID que mandaría un cliente anterior a F1: la spec no
+     * define compatibilidad para ese caso, y tragárselo devolviendo el run entero sería cambiar en
+     * el código una semántica que la revisión de arquitectura aprobó de otra forma.
+     */
+    private LastEventId parseLastEventId(String lastEventId) {
+        if (lastEventId == null || lastEventId.isBlank()) {
+            return new LastEventId(EventSequence.UNASSIGNED, "ok");
+        }
+        try {
+            long parsed = Long.parseLong(lastEventId.trim());
+            if (parsed < 0) {
+                throw new InvalidLastEventIdException(lastEventId);
+            }
+            return new LastEventId(EventSequence.of(parsed), "ok");
+        } catch (NumberFormatException notASeq) {
+            throw new InvalidLastEventIdException(lastEventId);
+        }
+    }
+
+    private record LastEventId(EventSequence seq, String outcome) {}
+
+    /** {@code Last-Event-ID} que no es un {@code seq}. SPEC-009 §2ter: 400, no reintentable. */
+    static final class InvalidLastEventIdException extends RuntimeException {
+        InvalidLastEventIdException(String received) {
+            super("Last-Event-ID must be a numeric event sequence, got: " + received);
+        }
+    }
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(InvalidLastEventIdException.class)
+    public Mono<org.springframework.http.ResponseEntity<ApiError>> invalidLastEventId(
+            InvalidLastEventIdException ex) {
+        // El outcome se cuenta acá y no en el parseo: el parseo puede lanzar desde dos ramas
+        // (no numérico y negativo) y contarlo ahí duplicaba la serie.
+        metrics.recordStreamResume("invalid");
+        // ResponseEntity con Content-Type explícito: el mapping declara `produces
+        // text/event-stream`, y sin esto el cuerpo del error se intentaría serializar como SSE.
+        // El cliente recibía el 400 sin poder leer el `code`.
+        return Mono.just(
+                org.springframework.http.ResponseEntity.badRequest()
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(new ApiError("validation_failed", ex.getMessage())));
     }
 
     @PostMapping("/{runId}/cancel")

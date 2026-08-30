@@ -32,6 +32,17 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 @ActiveProfiles("test")
 class GlobalRuntimeEventsControllerTest {
 
+    /**
+     * How long a global-spine subscriber stays open before asserting. The spine never terminates
+     * ("all of life-engine" has no terminal event), so a window is the only way to bound the
+     * collection. It must comfortably outlast the no-LLM workflow (<300ms) without stretching
+     * the suite.
+     */
+    private static final Duration COLLECT_WINDOW = Duration.ofSeconds(3);
+
+    /** Ceiling for {@code block()} — strictly greater than {@link #COLLECT_WINDOW}. */
+    private static final Duration BLOCK_TIMEOUT = Duration.ofSeconds(10);
+
     @Autowired
     private WebTestClient webTestClient;
 
@@ -53,7 +64,7 @@ class GlobalRuntimeEventsControllerTest {
                         .returnResult(RuntimeEventResponse.class)
                         .getResponseBody()
                         .filter(e -> e.runId() != null)
-                        .take(1)
+                        .take(COLLECT_WINDOW)
                         .collectList();
 
         // Trigger a fast no-LLM run on a separate scheduler so the subscribe-then-publish
@@ -61,9 +72,15 @@ class GlobalRuntimeEventsControllerTest {
         Thread.sleep(150);
         UUID runId = createNoLlmRun();
 
-        List<RuntimeEventResponse> events = subscription.block(Duration.ofSeconds(5));
-        org.assertj.core.api.Assertions.assertThat(events).isNotEmpty();
-        org.assertj.core.api.Assertions.assertThat(events.get(0).runId()).isEqualTo(runId);
+        List<RuntimeEventResponse> events = subscription.block(BLOCK_TIMEOUT);
+        // The spine is GLOBAL: any run alive in this Spring context publishes into it, including
+        // runs started by other tests sharing the context. Asserting on the FIRST event assumed
+        // this stream was ours alone and made the test fail whenever a foreign run got there
+        // first (CI run 32891186224). The contract under test is "a subscriber sees events from a
+        // run it had no prior knowledge of" — so assert our run is PRESENT, not that it is alone.
+        org.assertj.core.api.Assertions.assertThat(events)
+                .extracting(RuntimeEventResponse::runId)
+                .contains(runId);
     }
 
     @Test
@@ -82,7 +99,7 @@ class GlobalRuntimeEventsControllerTest {
                         .returnResult(RuntimeEventResponse.class)
                         .getResponseBody()
                         .filter(e -> e.runId() != null)
-                        .take(1)
+                        .take(COLLECT_WINDOW)
                         .collectList();
 
         Thread.sleep(150);
@@ -91,11 +108,16 @@ class GlobalRuntimeEventsControllerTest {
         // We only subscribed to demo.* — that's where this run lives, so we DO see at least one
         // event from it. The negative case (crypto subscriber sees nothing from a demo run) is
         // exercised in {@link #streamGlobal_workflowPrefixFiltersOutMismatchedWorkflow}.
-        List<RuntimeEventResponse> events = subscription.block(Duration.ofSeconds(5));
-        org.assertj.core.api.Assertions.assertThat(events).isNotEmpty();
-        org.assertj.core.api.Assertions.assertThat(events.get(0).runId()).isEqualTo(runId);
-        org.assertj.core.api.Assertions.assertThat(events.get(0).workflowId())
-                .startsWith("demo.");
+        List<RuntimeEventResponse> events = subscription.block(BLOCK_TIMEOUT);
+        // Same global-spine caveat as above: other demo.* runs may share this window, so assert
+        // presence rather than position.
+        org.assertj.core.api.Assertions.assertThat(events)
+                .extracting(RuntimeEventResponse::runId)
+                .contains(runId);
+        // The prefix filter is the actual subject here: nothing outside demo.* may leak through.
+        org.assertj.core.api.Assertions.assertThat(events)
+                .extracting(RuntimeEventResponse::workflowId)
+                .allSatisfy(id -> org.assertj.core.api.Assertions.assertThat(id).startsWith("demo."));
     }
 
     @Test

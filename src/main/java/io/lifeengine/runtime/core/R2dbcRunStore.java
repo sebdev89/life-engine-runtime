@@ -3,6 +3,7 @@ package io.lifeengine.runtime.core;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.lifeengine.runtime.domain.AgentStageRecord;
+import io.lifeengine.runtime.domain.EventSequence;
 import io.lifeengine.runtime.domain.Run;
 import io.lifeengine.runtime.domain.RunStatus;
 import io.lifeengine.runtime.domain.RuntimeEvent;
@@ -24,6 +25,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.reactive.TransactionalOperator;
+import reactor.core.publisher.Mono;
 
 /**
  * PostgreSQL R2DBC implementation of {@link RunStore}.
@@ -84,14 +87,21 @@ public class R2dbcRunStore implements RunStore {
 
     private static final String INSERT_EVENT_SQL =
             """
-            INSERT INTO runtime_event (event_id, run_id, type, occurred_at, source, attributes, terminal)
-            VALUES (:event_id, :run_id, :type, :occurred_at, :source, :attributes, :terminal)
-            ON CONFLICT (event_id) DO NOTHING
+            WITH inserted AS (
+                INSERT INTO runtime_event (event_id, run_id, type, occurred_at, source, attributes, terminal)
+                VALUES (:event_id, :run_id, :type, :occurred_at, :source, :attributes, :terminal)
+                ON CONFLICT (event_id) DO NOTHING
+                RETURNING seq
+            )
+            SELECT seq FROM inserted
+            UNION ALL
+            SELECT seq FROM runtime_event WHERE event_id = :event_id
+            LIMIT 1
             """;
 
     private static final String FIND_EVENTS_SQL =
             """
-            SELECT event_id, run_id, type, occurred_at, source, attributes, terminal
+            SELECT event_id, run_id, type, occurred_at, source, attributes, terminal, seq
             FROM runtime_event
             WHERE run_id = :run_id
             ORDER BY seq ASC
@@ -140,15 +150,24 @@ public class R2dbcRunStore implements RunStore {
 
     private final DatabaseClient databaseClient;
     private final ObjectMapper objectMapper;
+    private final TransactionalOperator transactionalOperator;
 
-    public R2dbcRunStore(DatabaseClient databaseClient, ObjectMapper objectMapper) {
+    public R2dbcRunStore(
+            DatabaseClient databaseClient,
+            ObjectMapper objectMapper,
+            TransactionalOperator transactionalOperator) {
         this.databaseClient = databaseClient;
         this.objectMapper = objectMapper;
+        this.transactionalOperator = transactionalOperator;
     }
 
     @Override
     public void saveRun(Run run) {
-        databaseClient
+        upsertRun(run).block(BLOCK_TIMEOUT);
+    }
+
+    private Mono<Void> upsertRun(Run run) {
+        return databaseClient
                 .sql(UPSERT_RUN_SQL)
                 .bind("id", run.id())
                 .bind("status", run.status().name())
@@ -162,8 +181,7 @@ public class R2dbcRunStore implements RunStore {
                 .bind("metadata", jsonOf(run.metadata()))
                 .fetch()
                 .rowsUpdated()
-                .then()
-                .block(BLOCK_TIMEOUT);
+                .then();
     }
 
     @Override
@@ -180,8 +198,38 @@ public class R2dbcRunStore implements RunStore {
     }
 
     @Override
-    public void appendEvent(RuntimeEvent event) {
-        databaseClient
+    public RuntimeEvent appendEvent(RuntimeEvent event) {
+        Long assigned = insertEvent(event).block(BLOCK_TIMEOUT);
+        return assigned == null ? event : event.withSeq(EventSequence.of(assigned));
+    }
+
+    @Override
+    public RuntimeEvent appendEventAndSaveRun(RuntimeEvent event, Run run) {
+        // El evento va primero DENTRO de la misma transacción (ADR-RT-003). Si el upsert del run
+        // falla, la transacción se deshace entera: nunca queda un estado sin el evento que lo
+        // justifica. `inTransaction` de TransactionalOperator envuelve las dos sentencias.
+        Long assigned =
+                transactionalOperator
+                        .transactional(insertEvent(event).flatMap(seq -> upsertRun(run).thenReturn(seq)))
+                        .block(BLOCK_TIMEOUT);
+        return assigned == null ? event : event.withSeq(EventSequence.of(assigned));
+    }
+
+    /**
+     * Inserta y devuelve el {@code seq}, sin tocar nunca una fila ya escrita.
+     *
+     * <p>El CTE existe por la invariante I3 (append-only literal). {@code DO NOTHING} solo no
+     * sirve: en el reintento idempotente {@code RETURNING} no devuelve nada y el evento se
+     * quedaría sin número. La versión anterior usaba {@code DO UPDATE SET event_id = event_id},
+     * que devuelve el seq pero **es un UPDATE real** en Postgres —toma lock de fila y crea una
+     * versión nueva—, así que violaba I3 aunque el dato no cambiara.
+     *
+     * <p>El {@code UNION ALL … LIMIT 1} resuelve la carrera sin bloqueo: si el INSERT ganó, la
+     * primera rama trae su seq; si otro lo insertó primero, la segunda encuentra el suyo. En los
+     * dos casos el reintento devuelve el MISMO número que la escritura original.
+     */
+    private Mono<Long> insertEvent(RuntimeEvent event) {
+        return databaseClient
                 .sql(INSERT_EVENT_SQL)
                 .bind("event_id", event.eventId())
                 .bind("run_id", event.runId())
@@ -190,10 +238,8 @@ public class R2dbcRunStore implements RunStore {
                 .bind("source", event.source())
                 .bind("attributes", jsonOf(event.attributes()))
                 .bind("terminal", event.terminal())
-                .fetch()
-                .rowsUpdated()
-                .then()
-                .block(BLOCK_TIMEOUT);
+                .map((row, meta) -> row.get("seq", Long.class))
+                .one();
     }
 
     @Override
@@ -296,6 +342,11 @@ public class R2dbcRunStore implements RunStore {
                 readJsonMap(row.get("metadata", Json.class), METADATA_TYPE));
     }
 
+    private static EventSequence seqOf(Row row) {
+        Long seq = row.get("seq", Long.class);
+        return seq == null ? EventSequence.UNASSIGNED : EventSequence.of(seq);
+    }
+
     private RuntimeEvent mapEvent(Row row) {
         return new RuntimeEvent(
                 row.get("event_id", UUID.class),
@@ -304,7 +355,8 @@ public class R2dbcRunStore implements RunStore {
                 row.get("occurred_at", Instant.class),
                 row.get("source", String.class),
                 readJsonMap(row.get("attributes", Json.class), ATTRIBUTES_TYPE),
-                Boolean.TRUE.equals(row.get("terminal", Boolean.class)));
+                Boolean.TRUE.equals(row.get("terminal", Boolean.class)),
+                seqOf(row));
     }
 
     private AgentStageRecord mapStage(Row row) {

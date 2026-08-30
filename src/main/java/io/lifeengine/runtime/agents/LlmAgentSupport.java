@@ -13,6 +13,7 @@ import io.lifeengine.runtime.prompts.PromptTemplate;
 import io.lifeengine.runtime.workflow.WorkflowRunContext;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -63,7 +64,9 @@ public final class LlmAgentSupport {
                 llmClient.chatCompletionsEndpoint());
         ctx.emit(
                 EventType.LLM_CALL_STARTED,
-                WorkflowRunContext.previewAttrs(agentId, model, promptRedacted, template),
+                withModelRole(
+                        WorkflowRunContext.previewAttrs(agentId, model, promptRedacted, template),
+                        llmClient),
                 false);
 
         // publishOn(boundedElastic) is the critical hop: WebClient signals on Netty event-loop
@@ -89,8 +92,15 @@ public final class LlmAgentSupport {
                             String raw = response.content();
                             ctx.emit(
                                     EventType.LLM_CALL_SUCCEEDED,
-                                    WorkflowRunContext.llmSucceededAttrs(
-                                            agentId, model, latencyMs, raw, response.usage(), template),
+                                    withModelRole(
+                                            WorkflowRunContext.llmSucceededAttrs(
+                                                    agentId,
+                                                    model,
+                                                    latencyMs,
+                                                    raw,
+                                                    response.usage(),
+                                                    template),
+                                            llmClient),
                                     false);
                             ctx.appendLlmCallRecord(
                                     new LlmCallRecord(
@@ -115,7 +125,10 @@ public final class LlmAgentSupport {
                             if (error instanceof LlmCallException llmEx) {
                                 ctx.emit(
                                         EventType.LLM_CALL_FAILED,
-                                        WorkflowRunContext.llmFailedAttrs(agentId, model, latencyMs, llmEx),
+                                        withModelRole(
+                                                WorkflowRunContext.llmFailedAttrs(
+                                                        agentId, model, latencyMs, llmEx),
+                                                llmClient),
                                         false);
                                 ctx.appendLlmCallRecord(
                                         new LlmCallRecord(
@@ -148,7 +161,10 @@ public final class LlmAgentSupport {
                                         error.getMessage() == null ? error.toString() : error.getMessage();
                                 ctx.emit(
                                         EventType.LLM_CALL_FAILED,
-                                        WorkflowRunContext.llmFailedAttrs(agentId, model, message, latencyMs),
+                                        withModelRole(
+                                                WorkflowRunContext.llmFailedAttrs(
+                                                        agentId, model, message, latencyMs),
+                                                llmClient),
                                         false);
                                 ctx.appendLlmCallRecord(
                                         new LlmCallRecord(
@@ -180,6 +196,30 @@ public final class LlmAgentSupport {
      * agente salió por el proveedor que le corresponde o por el {@code @Primary} — que es
      * justamente lo que hay que saber cuando algo falla.
      */
+    /**
+     * Agrega el rol de Multi-Model V2 a los atributos de un evento {@code LLM_CALL_*}.
+     *
+     * <p>El rol ya viajaba en {@code metadata} del {@link LlmCallRecord}, pero no en el payload de
+     * los eventos: el cockpit arma la lista de llamadas desde el stream SSE y sólo cae al detalle
+     * del run cuando ya terminó. Sin esta clave, una corrida en vivo muestra el modelo y esconde
+     * por qué ése — que es la mitad que importa cuando un {@code @Qualifier} se cae al
+     * {@code @Primary} y los dos caminos resuelven al mismo modelo.
+     *
+     * <p>La clave es {@code modelRole} y no {@code model_role} a propósito: es la que ya persiste
+     * {@code metadata} y la que usan el resto de los atributos del runtime ({@code agentId},
+     * {@code latencyMs}, {@code promptTemplateId}). El {@code model_role} en snake_case existe
+     * sólo como tag de Prometheus, donde es la convención correcta.
+     */
+    private static Map<String, String> withModelRole(Map<String, String> attrs, LlmClient llmClient) {
+        Map<String, String> role = roleMetadata(llmClient);
+        if (role.isEmpty()) {
+            return attrs;
+        }
+        Map<String, String> merged = new LinkedHashMap<>(attrs);
+        merged.putAll(role);
+        return merged;
+    }
+
     private static Map<String, String> roleMetadata(LlmClient llmClient) {
         String role = llmClient.role();
         return role == null || role.isBlank() ? Map.of() : Map.of("modelRole", role);

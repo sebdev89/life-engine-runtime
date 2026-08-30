@@ -150,7 +150,7 @@ class LlmAgentSupportRetryTest {
 
     private Harness harness() {
         RunStore store = new InMemoryRunStore();
-        RunEventPublisher publisher = new RunEventPublisher();
+        RunEventPublisher publisher = new RunEventPublisher(new io.lifeengine.runtime.observability.RuntimeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
         UUID runId = UUID.randomUUID();
         WorkflowRunContext ctx =
                 new WorkflowRunContext(
