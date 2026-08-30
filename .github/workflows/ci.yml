@@ -115,6 +115,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # `git describe` necesita los tags, y el default de checkout (fetch-depth: 1)
+          # no los trae. Sin esto la version caeria siempre al sha corto.
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -129,6 +133,22 @@ jobs:
       # Immutable sha- tags only. 'latest' is a moving pointer and is banned across the platform
       # (KAN-193 no-latest guard); deploys resolve by digest/sha, never by latest. metadata-action still
       # stamps org.opencontainers.image.revision=<sha> into the labels, so the image keeps its OCI revision.
+      # La version sale del tag de git, no del pom.xml. El pom dice `0.0.1-SNAPSHOT`
+      # —el default de Spring Initializr, que nadie toco nunca— y un tag no obliga a
+      # commitear un bump en cada release. Ademas es el unico mecanismo que funciona
+      # igual en los servicios Java y en las UI Angular.
+      #
+      # `--match 'v*'` importa: varios repos arrastran tags con otra convencion
+      # (atp-lite-v1, inbox-ui-v6.4) que git describe tomaria por error.
+      #
+      # `--always` evita que el build falle en un repo sin tags: cae al sha corto.
+      - name: Versión desde el tag
+        id: version
+        run: |
+          semver="$(git describe --tags --match 'v*' --always)"
+          echo "semver=${semver}" >> "$GITHUB_OUTPUT"
+          echo "versión: ${semver}"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -136,6 +156,8 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
           tags: |
             type=sha,prefix=sha-
+          labels: |
+            life-engine.semver=${{ steps.version.outputs.semver }}
 
       - name: Build and push
         id: build
