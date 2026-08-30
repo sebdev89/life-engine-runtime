@@ -50,6 +50,7 @@ class F1ContractAndMetricsTest {
                         RunStatus.RUNNING,
                         "demo.llm.workflow",
                         "corr-f1",
+                        null,
                         Instant.now(),
                         Instant.now(),
                         Instant.now(),

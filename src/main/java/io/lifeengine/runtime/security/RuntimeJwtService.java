@@ -124,7 +124,12 @@ public class RuntimeJwtService {
                 authorities.add("ROLE_" + role.trim().toUpperCase(Locale.ROOT));
             }
             List<String> effective = withDerivedRuntimeAuthorities(role, authorities);
-            return ParseOutcome.ok(new RuntimePrincipal(userId, email, role, List.copyOf(effective)));
+            // Claim `tenant` (Auth V57). Puede faltar: NULL significa "usuario de plataforma"
+            // —los administradores no tienen tenant propio— y también los tokens viejos que
+            // siguen vivos hasta caducar. No se infiere ni se defaultea.
+            String tenantKey = claims.get("tenant", String.class);
+            return ParseOutcome.ok(
+                    new RuntimePrincipal(userId, email, role, List.copyOf(effective), tenantKey));
         } catch (ExpiredJwtException ex) {
             return ParseOutcome.failed("expired");
         } catch (SignatureException | MalformedJwtException ex) {

@@ -9,6 +9,7 @@ import io.lifeengine.runtime.domain.RuntimeEvent;
 import io.lifeengine.runtime.events.RunEventPublisher;
 import io.lifeengine.runtime.observability.RunLogContext;
 import io.lifeengine.runtime.observability.RuntimeMetrics;
+import io.lifeengine.runtime.security.RuntimePrincipal;
 import io.lifeengine.runtime.workflow.WorkflowRouter;
 import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
@@ -44,6 +45,22 @@ public class RunService {
         this.workflowRouter = workflowRouter;
         this.eventPublisher = eventPublisher;
         this.metrics = metrics;
+    }
+
+    /**
+     * El tenant del llamador, o {@code null} si su token no lo afirma.
+     *
+     * <p>Sólo los tokens de usuario llevan el claim {@code tenant} (Auth V57). Los de servicio no
+     * lo llevan todavía —necesitan {@code act.tenant}, que es W2— así que hoy toda corrida
+     * disparada por Business Chat, Dev Agent o ATP queda sin atribuir. Eso es visible en
+     * {@code runtime_tenancy_missing_claim_total} y no se disimula con un default.
+     */
+    private static String tenantOf(Authentication caller) {
+        if (caller == null || !(caller.getPrincipal() instanceof RuntimePrincipal principal)) {
+            return null;
+        }
+        String tenant = principal.tenantKey();
+        return tenant == null || tenant.isBlank() ? null : tenant.trim();
     }
 
     public Mono<Run> startRun(StartRunRequest request) {
@@ -85,12 +102,21 @@ public class RunService {
                             String executor = workflowRouter.resolveExecutorLabel(workflowId);
                             metadata.put("executor", executor);
 
+                            // El tenant sale del TOKEN, nunca de request.metadata(): un tenant que
+                            // llega en el cuerpo es un tenant que el llamador eligió. Si el token no
+                            // lo trae —hoy, todos los S2S— queda null y se cuenta, no se inventa.
+                            String tenantId = tenantOf(caller);
+                            if (tenantId == null) {
+                                metrics.recordMissingTenantClaim(workflowId);
+                            }
+
                             Run run =
                                     new Run(
                                             runId,
                                             RunStatus.QUEUED,
                                             workflowId,
                                             correlationId,
+                                            tenantId,
                                             now,
                                             now,
                                             null,
@@ -179,17 +205,8 @@ public class RunService {
                                     signalled
                                             ? "Cancellation signalled; in-flight LLM HTTP calls may still complete."
                                             : "Run marked cancelled; no active workflow job found.");
-                            Run withNote =
-                                    new Run(
-                                            cancelled.id(),
-                                            cancelled.status(),
-                                            cancelled.workflowId(),
-                                            cancelled.correlationId(),
-                                            cancelled.createdAt(),
-                                            cancelled.updatedAt(),
-                                            cancelled.startedAt(),
-                                            cancelled.finishedAt(),
-                                            metadata);
+                            Run withNote = cancelled.withMetadata(metadata);
+                            store.saveRun(withNote);
                             RuntimeEvent event =
                                     RuntimeEvent.of(
                                             runId,

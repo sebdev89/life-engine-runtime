@@ -61,6 +61,7 @@ class SseStreamBlockingSafetyTest {
                         RunStatus.RUNNING,
                         WORKFLOW_ID,
                         "corr-sse-safety",
+                        null,
                         now,
                         now,
                         now,

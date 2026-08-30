@@ -46,6 +46,7 @@ class RunEventStreamSeqOrderingTest {
                         RunStatus.RUNNING,
                         "demo.llm.workflow",
                         "corr-order",
+                        null,
                         Instant.now(),
                         Instant.now(),
                         Instant.now(),

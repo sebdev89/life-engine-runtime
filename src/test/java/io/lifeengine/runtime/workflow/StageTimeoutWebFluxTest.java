@@ -77,6 +77,7 @@ class StageTimeoutWebFluxTest {
                         RunStatus.RUNNING,
                         SLOW_WORKFLOW_ID,
                         "stage-timeout-test",
+                        null,
                         now,
                         now,
                         now,
