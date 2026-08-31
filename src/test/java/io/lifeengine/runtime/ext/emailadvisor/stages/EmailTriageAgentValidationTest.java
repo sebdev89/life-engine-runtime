@@ -126,11 +126,11 @@ class EmailTriageAgentValidationTest {
                         "el prompt cambió — subí EmailTriagePrompts.VERSION y actualizá el hash"
                                 + " esperado en este test")
                 .isEqualTo(EXPECTED_PROMPT_SHA256);
-        assertThat(EmailTriagePrompts.VERSION).isEqualTo("email-triage-v1");
+        assertThat(EmailTriagePrompts.VERSION).isEqualTo("email-triage-v2");
     }
 
     /** SHA-256 del prompt de la versión declarada. */
-    private static final String EXPECTED_PROMPT_SHA256 = "f370f274e71211bf9bf3a44054dddda34776259b7839112c0943e9ae011701e6";
+    private static final String EXPECTED_PROMPT_SHA256 = "d99a4be9007bd53a65d09639fcadcf9f4678dc73a86b2eb5f8c4094def4a8613";
 
     private static String sha256(String value) {
         try {

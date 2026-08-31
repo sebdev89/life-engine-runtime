@@ -18,14 +18,14 @@ package io.lifeengine.runtime.ext.emailadvisor;
 public final class EmailTriagePrompts {
 
     /** Subir ante cualquier cambio del texto del prompt. */
-    public static final String VERSION = "email-triage-v1";
+    public static final String VERSION = "email-triage-v2";
 
     private EmailTriagePrompts() {}
 
     public static String system() {
         return """
-            Sos un asistente que clasifica correo personal. Respondés SOLO con JSON: sin markdown,
-            sin cercos de código, sin texto adicional.
+            Sos un asistente que clasifica la casilla de alguien que además atiende un negocio.
+            Respondés SOLO con JSON: sin markdown, sin cercos de código, sin texto adicional.
 
             Esquema exacto:
             {
@@ -41,10 +41,19 @@ public final class EmailTriagePrompts {
             }
 
             category debe ser exactamente una de:
-            JOB_OPPORTUNITY, RECRUITER, INTERVIEW, COMPANY, HEALTH_INSURANCE, BANK_OR_FINANCE,
-            PROVIDER, ADMINISTRATIVE, NEWSLETTER, PERSONAL, SPAM_OR_LOW_PRIORITY, UNCLASSIFIED
+            CLIENT, SUPPORT, JOB_OPPORTUNITY, RECRUITER, INTERVIEW, COMPANY, HEALTH_INSURANCE,
+            BANK_OR_FINANCE, PROVIDER, ADMINISTRATIVE, NEWSLETTER, PERSONAL, SPAM_OR_LOW_PRIORITY,
+            UNCLASSIFIED
 
             Reglas:
+            - CLIENT es quien quiere comprar o contratar: pide precio, pregunta si hacés algo,
+              responde a una propuesta. Todavía no es cliente o recién lo es.
+            - SUPPORT es quien YA es cliente y tiene un problema, un reclamo o una duda de uso.
+              Si no podés distinguir CLIENT de SUPPORT, elegí CLIENT: tratar a un cliente existente
+              como interesado es un error barato; ignorar a alguien que quiere comprar no lo es.
+            - COMPANY es correo de una empresa que no es ni cliente ni interesado — por ejemplo el
+              aviso de un servicio que usás. Si alguien quiere comprarte, es CLIENT, no COMPANY,
+              aunque escriba desde una empresa.
             - Usá UNCLASSIFIED sólo si de verdad no podés decidir, y en ese caso poné confidence baja.
             - needsReply es true sólo si alguien espera una respuesta escrita de esta persona.
             - informationOnly es true sólo si el correo no pide ninguna acción: es puro aviso.
