@@ -6,6 +6,7 @@ import io.lifeengine.runtime.agents.AgentExecutionRequest;
 import io.lifeengine.runtime.agents.AgentExecutionResult;
 import io.lifeengine.runtime.agents.AgentExecutor;
 import io.lifeengine.runtime.agents.LlmAgentSupport;
+import io.lifeengine.runtime.agents.StrictAgentJson;
 import io.lifeengine.runtime.domain.EventType;
 import io.lifeengine.runtime.ext.emailadvisor.EmailTriagePrompts;
 import io.lifeengine.runtime.llm.LlmClient;
@@ -131,7 +132,13 @@ public class EmailTriageAgent implements AgentExecutor {
     String validate(String raw) {
         JsonNode node;
         try {
-            node = objectMapper.readTree(raw == null ? "" : raw.strip());
+            // gemma3:4b —el modelo del rol `fast`, que es el que ejecuta este agente— devuelve el
+            // JSON dentro de un cerco ```json aunque el prompt lo prohíba explícitamente. Un
+            // readTree directo lo rechaza y el correo termina UNCLASSIFIED sin que el modelo se
+            // haya equivocado en nada. StrictAgentJson es el parser que ya usan los otros doce
+            // agentes justamente para esto: tolera el cerco y el preámbulo, pero no afloja la
+            // gramática (sin comas colgantes, sin comillas simples, sin coerción silenciosa).
+            node = objectMapper.readTree(StrictAgentJson.canonicalJson(raw));
         } catch (Exception e) {
             throw new IllegalArgumentException("la respuesta no es JSON", e);
         }

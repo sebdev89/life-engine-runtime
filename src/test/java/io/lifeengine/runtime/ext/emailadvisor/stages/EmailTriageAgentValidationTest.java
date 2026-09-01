@@ -105,6 +105,33 @@ class EmailTriageAgentValidationTest {
     }
 
     @Test
+    @DisplayName("el JSON dentro de un cerco ```json se acepta: es lo que devuelve gemma3:4b")
+    void fencedOutputIsAccepted() {
+        // No es una hipótesis: el prompt del sistema dice "sin cercos de código" y gemma3:4b —el
+        // modelo del rol `fast`, el que ejecuta este agente— lo envuelve igual. Con el parseo
+        // directo anterior, TODO correo real terminaba UNCLASSIFIED por un cerco, sin que el
+        // modelo hubiera errado la clasificación.
+        String fenced = "```json\n" + VALID.strip() + "\n```\n";
+
+        String canonical = agent.validate(fenced);
+
+        assertThat(canonical)
+                .contains("\"category\":\"RECRUITER\"")
+                .contains("\"promptVersion\":\"" + EmailTriagePrompts.VERSION + "\"");
+    }
+
+    @Test
+    @DisplayName("tolerar el cerco no afloja la validación de lo que hay adentro")
+    void fenceToleranceDoesNotWeakenValidation() {
+        String fencedWithBadCategory =
+                "```json\n" + VALID.strip().replace("RECRUITER", "AMIGOS") + "\n```";
+
+        assertThatThrownBy(() -> agent.validate(fencedWithBadCategory))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("category fuera del vocabulario");
+    }
+
+    @Test
     @DisplayName("un campo faltante se rechaza en vez de asumir un default")
     void missingFieldIsRejected() {
         assertThatThrownBy(
