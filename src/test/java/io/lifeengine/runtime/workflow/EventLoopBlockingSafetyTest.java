@@ -196,6 +196,12 @@ class EventLoopBlockingSafetyTest {
         }
 
         @Override
+        public List<Run> listRuns(String tenantId, int limit, Instant createdBefore, UUID beforeId) {
+            record("listRuns");
+            return delegate.listRuns(tenantId, limit, createdBefore, beforeId);
+        }
+
+        @Override
         public RuntimeEvent appendEvent(RuntimeEvent event) {
             record("appendEvent[" + event.type() + "]");
             return delegate.appendEvent(event);
