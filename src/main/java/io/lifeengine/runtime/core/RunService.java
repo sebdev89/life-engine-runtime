@@ -14,6 +14,7 @@ import io.lifeengine.runtime.workflow.WorkflowRouter;
 import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -61,6 +62,51 @@ public class RunService {
         }
         String tenant = principal.tenantKey();
         return tenant == null || tenant.isBlank() ? null : tenant.trim();
+    }
+
+    /**
+     * Las corridas del tenant del llamador, las más nuevas primero.
+     *
+     * <p>El tenant sale del <b>token</b>, igual que al iniciar una corrida, y nunca de un
+     * parámetro: un tenant que llega en el request es un tenant que el llamador eligió. Runtime
+     * sigue sin autorizar sobre él —no consulta pertenencia, eso es de Auth y del vertical—; acá
+     * sólo se usa para scopear la consulta.
+     *
+     * <p>Un token sin claim de tenant no puede listar, y falla explícito con
+     * {@link TenantScopeRequiredException}. Las dos alternativas son peores: devolver todas las
+     * corridas es una fuga entre tenants, y devolver una lista vacía miente sobre por qué.
+     *
+     * <p><b>Consecuencia conocida (TD-TENANCY-001):</b> los tokens de servicio todavía no llevan
+     * tenant —eso es W2, con {@code act.tenant}— y hoy el 100% del tráfico real de Runtime es S2S.
+     * O sea: este endpoint le responde a un token de usuario (Auth lo emite con {@code tenant}
+     * desde V57) y le niega el acceso a un llamador S2S. Y las corridas que ese tráfico S2S ya
+     * dejó escritas tienen {@code tenant_id} NULL, así que <b>no las va a devolver ninguna
+     * consulta scopeada</b>. Se cuentan en {@code runtime_tenancy_missing_claim_total}.
+     */
+    public Mono<List<Run>> listRuns(int limit, Instant createdBefore, UUID beforeId) {
+        return ReactiveSecurityContextHolder.getContext()
+                .map(SecurityContext::getAuthentication)
+                .map(Optional::ofNullable)
+                .defaultIfEmpty(Optional.empty())
+                .flatMap(maybeAuth -> listRunsInternal(maybeAuth.orElse(null), limit, createdBefore, beforeId));
+    }
+
+    private Mono<List<Run>> listRunsInternal(
+            Authentication caller, int limit, Instant createdBefore, UUID beforeId) {
+        String tenantId = tenantOf(caller);
+        if (tenantId == null) {
+            // A propósito sin métrica: `runtime_tenancy_missing_claim_total` cuenta CORRIDAS
+            // INICIADAS sin claim, y su contrato dice que tiene que caer a cero cuando W2
+            // despliegue `act.tenant`. Sumarle una denegación de lectura rompería esa lectura y
+            // le agregaría un `workflowId` que no es un workflow. El 403 ya se ve en las métricas
+            // HTTP.
+            return Mono.error(
+                    new TenantScopeRequiredException(
+                            "el token del llamador no afirma un tenant: no se puede listar corridas"
+                                    + " sin scope"));
+        }
+        return Mono.fromCallable(() -> store.listRuns(tenantId, limit, createdBefore, beforeId))
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     public Mono<Run> startRun(StartRunRequest request) {
