@@ -9,6 +9,7 @@ import io.lifeengine.runtime.observability.RuntimeMetrics;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,6 +28,8 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiCompatibleLlmClient.class);
     private static final String CHAT_COMPLETIONS_PATH = "/v1/chat/completions";
+    private static final String MODELS_PATH = "/v1/models";
+    private static final String LATEST_SUFFIX = ":latest";
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final WebClient webClient;
@@ -56,21 +59,60 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         return role;
     }
 
+    /**
+     * Sonda de disponibilidad del proveedor.
+     *
+     * <p>Pega a {@value #MODELS_PATH}, que es parte de la API OpenAI-compatible y por lo tanto lo
+     * sirven tanto vLLM como Ollama. La versión anterior pegaba a {@code /health}: ese endpoint es
+     * propio de vLLM y Ollama responde 404, así que la sonda daba {@code false} incluso con el
+     * proveedor vivo y sirviendo completions (KAN-290). Un siempre-rojo es tan inútil como un
+     * siempre-verde: en los dos casos la sonda deja de ser señal.
+     *
+     * <p>No alcanza con que el proveedor conteste: se exige además que el modelo configurado esté
+     * en el catálogo. Un proveedor arriba con el modelo ausente rechaza todas las completions, y
+     * mostrar verde en ese estado es exactamente el falso positivo que esta sonda debe evitar.
+     */
+    @Override
     public Mono<Boolean> health() {
-        return webClient
-                .get()
-                .uri("/health")
-                .retrieve()
-                .toBodilessEntity()
-                .map(r -> r.getStatusCode().is2xxSuccessful())
-                .timeout(properties.timeout())
+        String expected = normalizeModel(properties.model());
+        return listModels()
+                .map(models -> providerServesModel(models, expected))
                 .onErrorReturn(false);
+    }
+
+    private static boolean providerServesModel(List<String> models, String expected) {
+        if (models == null || models.isEmpty()) {
+            // Lista vacía = proveedor inalcanzable (listModels traga el error) o sin modelos
+            // cargados. Los dos son "no se puede llamar al LLM".
+            return false;
+        }
+        if (expected.isEmpty()) {
+            // Sin modelo configurado no hay nada que exigir más allá de que el proveedor conteste.
+            return true;
+        }
+        return models.stream()
+                .map(OpenAiCompatibleLlmClient::normalizeModel)
+                .anyMatch(expected::equals);
+    }
+
+    /**
+     * Normaliza un identificador de modelo para comparar. Ollama trata {@code nomic-embed-text} y
+     * {@code nomic-embed-text:latest} como el mismo modelo pero sólo publica la forma larga.
+     */
+    private static String normalizeModel(String model) {
+        if (model == null) {
+            return "";
+        }
+        String trimmed = model.trim().toLowerCase(Locale.ROOT);
+        return trimmed.endsWith(LATEST_SUFFIX)
+                ? trimmed.substring(0, trimmed.length() - LATEST_SUFFIX.length())
+                : trimmed;
     }
 
     public Mono<List<String>> listModels() {
         return webClient
                 .get()
-                .uri("/v1/models")
+                .uri(MODELS_PATH)
                 .accept(MediaType.APPLICATION_JSON)
                 .retrieve()
                 .bodyToMono(ModelsResponse.class)
