@@ -149,6 +149,38 @@ class OpenAiCompatibleLlmClientTest {
                 .verify();
     }
 
+    @Test
+    void health_onProviderUp_probesModelsEndpointAndReturnsTrue() throws Exception {
+        mockLlm.enqueue(
+                new MockResponse()
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("{\"object\":\"list\",\"data\":[{\"id\":\"gemma3:4b\"}]}"));
+
+        StepVerifier.create(client(256, 0.0).health()).expectNext(true).verifyComplete();
+
+        RecordedRequest recorded = mockLlm.takeRequest(5, TimeUnit.SECONDS);
+        org.assertj.core.api.Assertions.assertThat(recorded.getMethod()).isEqualTo("GET");
+        // /health no lo sirve Ollama: la sonda tiene que pegar a la API compatible con OpenAI.
+        org.assertj.core.api.Assertions.assertThat(recorded.getPath()).isEqualTo("/v1/models");
+    }
+
+    @Test
+    void health_onNon2xx_returnsFalseWithoutFailing() {
+        mockLlm.enqueue(new MockResponse().setResponseCode(404).setBody("404 page not found"));
+
+        StepVerifier.create(client(256, 0.0).health()).expectNext(false).verifyComplete();
+    }
+
+    @Test
+    void health_onTransportError_returnsFalse() throws Exception {
+        MockWebServer downProvider = new MockWebServer();
+        downProvider.start();
+        String baseUrl = downProvider.url("/").toString().replaceAll("/$", "");
+        downProvider.shutdown();
+
+        StepVerifier.create(client(baseUrl, 256, 0.0).health()).expectNext(false).verifyComplete();
+    }
+
     private static MockResponse successResponse(String content) {
         return new MockResponse()
                 .setHeader("Content-Type", "application/json")
@@ -174,7 +206,10 @@ class OpenAiCompatibleLlmClientTest {
     }
 
     private OpenAiCompatibleLlmClient client(int maxTokens, double temperature) {
-        String baseUrl = mockLlm.url("/").toString().replaceAll("/$", "");
+        return client(mockLlm.url("/").toString().replaceAll("/$", ""), maxTokens, temperature);
+    }
+
+    private OpenAiCompatibleLlmClient client(String baseUrl, int maxTokens, double temperature) {
         WebClient webClient = WebClient.builder().baseUrl(baseUrl).build();
         RuntimeLlmProperties props =
                 new RuntimeLlmProperties(

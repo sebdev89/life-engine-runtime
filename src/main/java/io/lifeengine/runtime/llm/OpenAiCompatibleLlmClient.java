@@ -27,6 +27,9 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiCompatibleLlmClient.class);
     private static final String CHAT_COMPLETIONS_PATH = "/v1/chat/completions";
+    // La sonda pega acá y no a /health: /health no es parte de la API compatible con OpenAI
+    // y Ollama no lo sirve (404), así que la sonda daba false con el proveedor arriba.
+    private static final String MODELS_PATH = "/v1/models";
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final WebClient webClient;
@@ -59,7 +62,8 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     public Mono<Boolean> health() {
         return webClient
                 .get()
-                .uri("/health")
+                .uri(MODELS_PATH)
+                .accept(MediaType.APPLICATION_JSON)
                 .retrieve()
                 .toBodilessEntity()
                 .map(r -> r.getStatusCode().is2xxSuccessful())
@@ -70,7 +74,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     public Mono<List<String>> listModels() {
         return webClient
                 .get()
-                .uri("/v1/models")
+                .uri(MODELS_PATH)
                 .accept(MediaType.APPLICATION_JSON)
                 .retrieve()
                 .bodyToMono(ModelsResponse.class)
