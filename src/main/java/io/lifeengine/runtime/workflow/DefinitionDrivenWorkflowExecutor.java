@@ -8,12 +8,14 @@ import io.lifeengine.runtime.domain.AgentStageRecord;
 import io.lifeengine.runtime.domain.EventType;
 import io.lifeengine.runtime.domain.Run;
 import io.lifeengine.runtime.domain.RunStatus;
-import io.lifeengine.runtime.tools.ToolExecutionRequest;
-import io.lifeengine.runtime.tools.ToolNotFoundException;
-import io.lifeengine.runtime.observability.RunLogContext;
+import io.lifeengine.runtime.observability.LogContext;
 import io.lifeengine.runtime.observability.RuntimeMetrics;
 import io.lifeengine.runtime.observability.RuntimeObservation;
+import io.lifeengine.runtime.tools.ToolExecutionRequest;
+import io.lifeengine.runtime.tools.ToolNotFoundException;
 import io.lifeengine.runtime.tools.ToolRegistry;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.contextpropagation.ObservationThreadLocalAccessor;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
@@ -25,12 +27,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.stereotype.Component;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import reactor.util.context.Context;
 
 /**
  * Generic workflow executor: runs {@link WorkflowDefinition} stages in order, emits lifecycle events,
@@ -83,7 +87,18 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
         // RUN_STARTED ya no se emite acá: lo escribe RunService junto con la transición a RUNNING,
         // en la misma transacción (ADR-RT-003). Emitirlo también acá lo duplicaría.
 
-        RunLogContext.put(correlationId, runId.toString(), definition.workflowId());
+        // ── Lo que hay que capturar ANTES de saltar de hilo ────────────────────────────────
+        //
+        // Acá seguimos adentro del pedido HTTP que originó la corrida: RunService llama a esto
+        // desde su Mono.fromCallable. Un instante después, sobre otro hilo y con un Context
+        // vacío, no hay de dónde sacar ni el span padre ni el contexto de log.
+        //
+        // Sin esto pasaba lo que se midió en el cluster: un solo POST producía DOS trazas raíz
+        // distintas, y los logs del executor salían [life-engine-runtime,,,,] — justo los
+        // renglones que se leen cuando algo se rompe.
+        Observation pedidoQueLaOrigino = observation.currentObservation();
+        Map<String, String> contextoDeLog = MDC.getCopyOfContextMap();
+
         Mono<Void> traced =
                 observation.observeRun(
                         definition.workflowId(),
@@ -102,6 +117,41 @@ public class DefinitionDrivenWorkflowExecutor implements WorkflowExecutor {
             withAuth =
                     withAuth.contextWrite(
                             ReactiveSecurityContextHolder.withAuthentication(caller));
+        }
+
+        // La identidad de la corrida, para que TODOS sus logs la tengan — incluido el de
+        // "Workflow failed", que antes salía vacío.
+        withAuth =
+                withAuth.contextWrite(
+                        reactorCtx ->
+                                reactorCtx
+                                        .put(LogContext.RUN_ID, runId.toString())
+                                        .put(LogContext.WORKFLOW_ID, definition.workflowId())
+                                        .put(LogContext.CORRELATION_ID, correlationId));
+
+        // Y lo del pedido: requestId y tenantId no los conoce el executor, viajan desde afuera.
+        if (contextoDeLog != null) {
+            withAuth =
+                    withAuth.contextWrite(
+                            reactorCtx -> {
+                                Context next = Context.of(reactorCtx);
+                                for (String clave :
+                                        List.of(LogContext.REQUEST_ID, LogContext.TENANT_ID)) {
+                                    next = LogContext.write(next, clave, contextoDeLog.get(clave));
+                                }
+                                return next;
+                            });
+        }
+
+        // El padre de la traza. Va ÚLTIMO a propósito: contextWrite escribe hacia arriba, así que
+        // el último en aplicarse es el primero que ve la ejecución, y observeRun necesita
+        // encontrarlo ya puesto cuando arranca su propio span.
+        if (pedidoQueLaOrigino != null) {
+            withAuth =
+                    withAuth.contextWrite(
+                            reactorCtx ->
+                                    reactorCtx.put(
+                                            ObservationThreadLocalAccessor.KEY, pedidoQueLaOrigino));
         }
 
         Disposable disposable =

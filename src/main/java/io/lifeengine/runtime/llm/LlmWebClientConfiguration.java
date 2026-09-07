@@ -26,8 +26,8 @@ import org.springframework.web.reactive.function.client.WebClient;
 public class LlmWebClientConfiguration {
 
     @Bean
-    WebClient llmWebClient(RuntimeLlmProperties properties) {
-        return buildWebClient(properties);
+    WebClient llmWebClient(WebClient.Builder builder, RuntimeLlmProperties properties) {
+        return buildWebClient(builder, properties);
     }
 
     /** Cliente por default: lo reciben los agentes que no piden un rol explícito. */
@@ -41,21 +41,40 @@ public class LlmWebClientConfiguration {
     /** Rol conversacional — lo inyectan los agentes de business-chat con {@code @Qualifier}. */
     @Bean
     LlmClient chatLlmClient(
-            RuntimeLlmProperties defaults, RuntimeLlmRolesProperties roles, RuntimeMetrics metrics) {
+            WebClient.Builder builder,
+            RuntimeLlmProperties defaults,
+            RuntimeLlmRolesProperties roles,
+            RuntimeMetrics metrics) {
         RuntimeLlmProperties effective = roles.chatOrEmpty().merge(defaults);
-        return new OpenAiCompatibleLlmClient(buildWebClient(effective), effective, metrics, "chat");
+        return new OpenAiCompatibleLlmClient(
+                buildWebClient(builder, effective), effective, metrics, "chat");
     }
 
     /** Rol de clasificación/extracción — latencia sobre prosa. */
     @Bean
     LlmClient fastLlmClient(
-            RuntimeLlmProperties defaults, RuntimeLlmRolesProperties roles, RuntimeMetrics metrics) {
+            WebClient.Builder builder,
+            RuntimeLlmProperties defaults,
+            RuntimeLlmRolesProperties roles,
+            RuntimeMetrics metrics) {
         RuntimeLlmProperties effective = roles.fastOrEmpty().merge(defaults);
-        return new OpenAiCompatibleLlmClient(buildWebClient(effective), effective, metrics, "fast");
+        return new OpenAiCompatibleLlmClient(
+                buildWebClient(builder, effective), effective, metrics, "fast");
     }
 
-    private static WebClient buildWebClient(RuntimeLlmProperties properties) {
-        return WebClient.builder()
+    /**
+     * Se parte del {@code WebClient.Builder} de Spring Boot y no de {@code WebClient.builder()}.
+     *
+     * <p>No es equivalente: el del contexto viene con el {@code ObservationWebClientCustomizer}
+     * aplicado, y es lo único que hace que una llamada al LLM produzca un span. Con el builder
+     * pelado, la llamada más cara y más frágil de toda la corrida —la que sale del cluster, cruza
+     * el NAT y va al modelo— no aparecía en ninguna traza.
+     *
+     * <p>{@code clone()} porque el builder es mutable y hay tres roles: sin clonar, el
+     * {@code baseUrl} del último ganaría y los tres clientes terminarían apuntando al mismo lado.
+     */
+    private static WebClient buildWebClient(WebClient.Builder builder, RuntimeLlmProperties properties) {
+        return builder.clone()
                 .baseUrl(properties.baseUrl().replaceAll("/$", ""))
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + properties.apiKey())
                 .build();

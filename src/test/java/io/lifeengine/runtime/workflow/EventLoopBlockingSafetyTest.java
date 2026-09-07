@@ -24,7 +24,7 @@ import io.lifeengine.runtime.observability.RuntimeMetrics;
 import io.lifeengine.runtime.observability.RuntimeObservation;
 import io.lifeengine.runtime.tools.ToolRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import io.micrometer.tracing.Tracer;
+import io.micrometer.observation.ObservationRegistry;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -73,7 +73,7 @@ class EventLoopBlockingSafetyTest {
         AgentRegistry agentRegistry = new AgentRegistry(List.of(new FailingLlmAgent(llm)));
         ToolRegistry toolRegistry = new ToolRegistry(List.of());
         RuntimeMetrics metrics = new RuntimeMetrics(new SimpleMeterRegistry());
-        RuntimeObservation observation = new RuntimeObservation(Tracer.NOOP);
+        RuntimeObservation observation = new RuntimeObservation(ObservationRegistry.NOOP);
 
         DefinitionDrivenWorkflowExecutor executor =
                 new DefinitionDrivenWorkflowExecutor(
