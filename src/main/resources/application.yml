@@ -116,10 +116,27 @@ lifeengine:
         required-authority: ${RUNTIME_S2S_REQUIRED_AUTHORITY:RUNTIME_OPERATOR}
   security:
     jwt:
-      # Local default MUST match life-engine-auth/src/main/resources/application-local.yml so
-      # that auth-issued JWTs validate at the runtime without an explicit JWT_SECRET export.
-      # Override via JWT_SECRET in any non-local environment.
-      secret: ${JWT_SECRET:local-dev-jwt-hs512-secret-minimum-32-chars-long-xx}
+      # SIN default, y es la parte que importa de este bloque.
+      #
+      # Acá vivía el secreto de desarrollo, escrito literal. Medía 51 bytes, o sea más de los
+      # 32 que RuntimeJwtService exige, así que la verificación HS256 quedaba ACTIVA en todos
+      # los ambientes con una clave que cualquiera con acceso al repositorio puede leer.
+      # Firmarse un token de admin era copiar y pegar: se hizo, contra el cluster, y devolvió
+      # 201.
+      #
+      # El guard de JWKS no alcanzaba a taparlo: sólo deshabilita HS256 cuando el secreto es
+      # DEMASIADO CORTO para ser real. Un default largo se ve idéntico a un secreto de verdad.
+      # Un default no puede habilitar verificación de firma — es exactamente al revés de lo
+      # que uno quiere.
+      #
+      # Ahora vacío por default:
+      #   · con AUTH_JWKS_URI configurado → HS256 queda deshabilitado y sólo vale RS256;
+      #   · sin JWKS y sin secreto        → el servicio no arranca. Falla cerrado: un Runtime
+      #                                     que no puede validar nada no debería aceptar nada.
+      #
+      # El secreto de desarrollo se mudó a application-local.yml, que es donde Auth ya tenía
+      # el suyo. Este servicio era el único de los dos que lo tenía en el archivo común.
+      secret: ${JWT_SECRET:}
 
 runtime:
   llm:

@@ -1,0 +1,12 @@
+# Perfil `local` — desarrollo en la máquina, sin Auth por JWKS.
+#
+# El secreto de HS256 vive ACÁ y no en application.yml a propósito. En el archivo común
+# aplicaría a todos los ambientes, y un default de 51 bytes se ve idéntico a un secreto real:
+# dejaba la verificación HS256 activa en cualquier despliegue que no exportara JWT_SECRET,
+# con una clave que está en el repositorio. Es el mismo lugar donde Auth ya tenía el suyo
+# —life-engine-auth/src/main/resources/application-local.yml— y el valor DEBE seguir siendo
+# idéntico al de Auth, o los tokens que emite no validan acá.
+lifeengine:
+  security:
+    jwt:
+      secret: ${JWT_SECRET:local-dev-jwt-hs512-secret-minimum-32-chars-long-xx}
