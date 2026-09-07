@@ -1,5 +1,6 @@
 package io.lifeengine.runtime.core;
 
+import io.lifeengine.runtime.testsupport.SharedPostgres;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -26,9 +27,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.r2dbc.connection.R2dbcTransactionManager;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.transaction.reactive.TransactionalOperator;
-import org.testcontainers.DockerClientFactory;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.utility.DockerImageName;
 
 /**
  * R2DBC repository-style integration test for {@link R2dbcRunStore}.
@@ -44,13 +42,7 @@ import org.testcontainers.utility.DockerImageName;
  * a JUnit assumption so the rest of the unit suite stays green on machines without a daemon.
  */
 class R2dbcRunStoreTest {
-
-    @SuppressWarnings("resource")
-    private static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"))
-                    .withDatabaseName("life_engine_runtime_it")
-                    .withUsername("life")
-                    .withPassword("life");
+    private static SharedPostgres.Db POSTGRES_DB;
 
     private static DatabaseClient databaseClient;
     private static TransactionalOperator transactionalOperator;
@@ -60,11 +52,11 @@ class R2dbcRunStoreTest {
     @BeforeAll
     static void startContainerAndMigrate() {
         assumeTrue(
-                dockerAvailable(),
+                SharedPostgres.dockerAvailable(),
                 "Docker is required for R2dbcRunStoreTest — skipping the R2DBC integration suite.");
-        POSTGRES.start();
+        POSTGRES_DB = SharedPostgres.emptyDatabase("R2dbcRunStoreTest");
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .dataSource(POSTGRES_DB.jdbcUrl(), POSTGRES_DB.usuario(), POSTGRES_DB.password())
                 .locations("classpath:db/migration")
                 .load()
                 .migrate();
@@ -73,13 +65,13 @@ class R2dbcRunStoreTest {
                 io.r2dbc.spi.ConnectionFactories.get(
                         ConnectionFactoryOptions.builder()
                                 .option(ConnectionFactoryOptions.DRIVER, "postgresql")
-                                .option(ConnectionFactoryOptions.HOST, POSTGRES.getHost())
+                                .option(ConnectionFactoryOptions.HOST, POSTGRES_DB.host())
                                 .option(
                                         ConnectionFactoryOptions.PORT,
-                                        POSTGRES.getMappedPort(PostgreSQLContainer.POSTGRESQL_PORT))
-                                .option(ConnectionFactoryOptions.DATABASE, POSTGRES.getDatabaseName())
-                                .option(ConnectionFactoryOptions.USER, POSTGRES.getUsername())
-                                .option(ConnectionFactoryOptions.PASSWORD, POSTGRES.getPassword())
+                                        POSTGRES_DB.puerto())
+                                .option(ConnectionFactoryOptions.DATABASE, POSTGRES_DB.base())
+                                .option(ConnectionFactoryOptions.USER, POSTGRES_DB.usuario())
+                                .option(ConnectionFactoryOptions.PASSWORD, POSTGRES_DB.password())
                                 .build());
         databaseClient = DatabaseClient.create(connectionFactory);
         transactionalOperator =
@@ -87,17 +79,10 @@ class R2dbcRunStoreTest {
         store = new R2dbcRunStore(databaseClient, OBJECT_MAPPER, transactionalOperator);
     }
 
-    @AfterAll
-    static void stopContainer() {
-        if (POSTGRES.isRunning()) {
-            POSTGRES.stop();
-        }
-    }
-
     @BeforeEach
     void truncate() {
         assumeTrue(
-                POSTGRES.isRunning(),
+                POSTGRES_DB != null,
                 "PostgreSQL container did not start (Docker unavailable) — skipping test.");
         databaseClient
                 .sql("TRUNCATE TABLE runtime_event, runtime_agent_stage_record, runtime_llm_call_record, runtime_run RESTART IDENTITY CASCADE")
@@ -228,7 +213,7 @@ class R2dbcRunStoreTest {
      */
     @Test
     void appendEventAndSaveRun_rollsBackTheEventWhenTheProjectionFails() {
-        assumeTrue(POSTGRES.isRunning(), "requiere PostgreSQL");
+        assumeTrue(POSTGRES_DB != null, "requiere PostgreSQL");
         Run existing = seedRun();
         int eventsBefore = store.eventsFor(existing.id()).size();
 
@@ -400,14 +385,6 @@ class R2dbcRunStoreTest {
         assertThat(freshStore.eventsFor(runId)).hasSize(2);
         assertThat(freshStore.agentStagesFor(runId)).hasSize(1);
         assertThat(freshStore.llmCallRecordsFor(runId)).hasSize(1);
-    }
-
-    private static boolean dockerAvailable() {
-        try {
-            return DockerClientFactory.instance().isDockerAvailable();
-        } catch (Throwable t) {
-            return false;
-        }
     }
 
     private Run seedRun() {
