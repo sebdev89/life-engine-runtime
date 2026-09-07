@@ -15,7 +15,7 @@ import io.lifeengine.runtime.tools.ToolExecutionResult;
 import io.lifeengine.runtime.tools.ToolExecutor;
 import io.lifeengine.runtime.tools.ToolRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import io.micrometer.tracing.Tracer;
+import io.micrometer.observation.ObservationRegistry;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -54,7 +54,7 @@ class StageTimeoutWebFluxTest {
         AgentRegistry agentRegistry = new AgentRegistry(List.of());
         ToolRegistry toolRegistry = new ToolRegistry(List.of(slowTool));
         RuntimeMetrics metrics = new RuntimeMetrics(new SimpleMeterRegistry());
-        RuntimeObservation observation = new RuntimeObservation(Tracer.NOOP);
+        RuntimeObservation observation = new RuntimeObservation(ObservationRegistry.NOOP);
 
         DefinitionDrivenWorkflowExecutor executor =
                 new DefinitionDrivenWorkflowExecutor(
