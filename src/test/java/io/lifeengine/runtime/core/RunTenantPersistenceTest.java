@@ -1,5 +1,6 @@
 package io.lifeengine.runtime.core;
 
+import io.lifeengine.runtime.testsupport.SharedPostgres;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -20,9 +21,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.r2dbc.connection.R2dbcTransactionManager;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.transaction.reactive.TransactionalOperator;
-import org.testcontainers.DockerClientFactory;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.utility.DockerImageName;
 
 /**
  * El tenant de una corrida se persiste, sobrevive al ciclo de vida, y no se pisa (W1-05).
@@ -35,25 +33,19 @@ import org.testcontainers.utility.DockerImageName;
  */
 @DisplayName("tenant_id en runtime_run — W1-05")
 class RunTenantPersistenceTest {
-
-    @SuppressWarnings("resource")
-    private static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"))
-                    .withDatabaseName("life_engine_runtime_tenant_it")
-                    .withUsername("life")
-                    .withPassword("life");
+    private static SharedPostgres.Db POSTGRES_DB;
 
     private static R2dbcRunStore store;
     private static boolean started;
 
     @BeforeAll
     static void startContainerAndMigrate() {
-        assumeTrue(dockerAvailable(), "Se necesita Docker para RunTenantPersistenceTest — se saltea.");
-        POSTGRES.start();
+        assumeTrue(SharedPostgres.dockerAvailable(), "Se necesita Docker para RunTenantPersistenceTest — se saltea.");
+        POSTGRES_DB = SharedPostgres.emptyDatabase("RunTenantPersistenceTest");
         started = true;
 
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .dataSource(POSTGRES_DB.jdbcUrl(), POSTGRES_DB.usuario(), POSTGRES_DB.password())
                 .locations("classpath:db/migration")
                 .load()
                 .migrate();
@@ -62,26 +54,19 @@ class RunTenantPersistenceTest {
                 ConnectionFactories.get(
                         ConnectionFactoryOptions.builder()
                                 .option(ConnectionFactoryOptions.DRIVER, "postgresql")
-                                .option(ConnectionFactoryOptions.HOST, POSTGRES.getHost())
+                                .option(ConnectionFactoryOptions.HOST, POSTGRES_DB.host())
                                 .option(
                                         ConnectionFactoryOptions.PORT,
-                                        POSTGRES.getMappedPort(PostgreSQLContainer.POSTGRESQL_PORT))
-                                .option(ConnectionFactoryOptions.DATABASE, POSTGRES.getDatabaseName())
-                                .option(ConnectionFactoryOptions.USER, POSTGRES.getUsername())
-                                .option(ConnectionFactoryOptions.PASSWORD, POSTGRES.getPassword())
+                                        POSTGRES_DB.puerto())
+                                .option(ConnectionFactoryOptions.DATABASE, POSTGRES_DB.base())
+                                .option(ConnectionFactoryOptions.USER, POSTGRES_DB.usuario())
+                                .option(ConnectionFactoryOptions.PASSWORD, POSTGRES_DB.password())
                                 .build());
         store =
                 new R2dbcRunStore(
                         DatabaseClient.create(connectionFactory),
                         new ObjectMapper(),
                         TransactionalOperator.create(new R2dbcTransactionManager(connectionFactory)));
-    }
-
-    @AfterAll
-    static void stopContainer() {
-        if (started && POSTGRES.isRunning()) {
-            POSTGRES.stop();
-        }
     }
 
     @Test
@@ -160,13 +145,5 @@ class RunTenantPersistenceTest {
                 new Run(runId, RunStatus.QUEUED, "wf", "c", null, now, now, null, null, Map.of()));
 
         assertThat(store.findRun(runId).orElseThrow().tenantId()).isNull();
-    }
-
-    private static boolean dockerAvailable() {
-        try {
-            return DockerClientFactory.instance().isDockerAvailable();
-        } catch (RuntimeException ex) {
-            return false;
-        }
     }
 }
