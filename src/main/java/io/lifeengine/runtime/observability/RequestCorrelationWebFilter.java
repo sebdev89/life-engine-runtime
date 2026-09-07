@@ -1,7 +1,6 @@
 package io.lifeengine.runtime.observability;
 
 import java.util.UUID;
-import org.slf4j.MDC;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -11,13 +10,27 @@ import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
 import reactor.util.context.Context;
 
-/** Propagates {@code X-Request-Id} / {@code X-Correlation-Id} for structured logs. */
+/**
+ * Propaga {@code X-Request-Id} / {@code X-Correlation-Id} para los logs estructurados.
+ *
+ * <p>Este filtro escribe en el <b>Reactor Context y en ningún otro lado</b>. Que esos valores
+ * lleguen al MDC —en el hilo que sea, incluidos los schedulers de una ejecución asíncrona— lo hace
+ * {@link LogContext}, que registra un accessor por clave y deja que la propagación automática de
+ * contexto los restaure alrededor de cada operador.
+ *
+ * <p>Antes había un segundo mecanismo acá mismo: un {@code doOnEach} que escribía el MDC en cada
+ * señal y un {@code doFinally(MDC.clear())} que lo limpiaba. Se sacó. No era redundante, era
+ * <b>dañino</b>: {@code MDC.clear()} borra el MDC entero, y el MDC contiene también el
+ * {@code traceId} y el {@code spanId} que pone Micrometer. Una limpieza pensada para los campos de
+ * este filtro se llevaba puesta la correlación de la traza, que es justo lo que hace falta para
+ * reconstruir un incidente.
+ */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class RequestCorrelationWebFilter implements WebFilter {
 
-    public static final String REQUEST_ID_KEY = "requestId";
-    public static final String CORRELATION_ID_KEY = "correlationId";
+    public static final String REQUEST_ID_KEY = LogContext.REQUEST_ID;
+    public static final String CORRELATION_ID_KEY = LogContext.CORRELATION_ID;
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
@@ -36,27 +49,13 @@ public class RequestCorrelationWebFilter implements WebFilter {
                                     ctx.put(REQUEST_ID_KEY, requestId)
                                             .put(CORRELATION_ID_KEY, correlationId);
                             if (runId != null) {
-                                next = next.put(RunLogContext.RUN_ID, runId);
+                                next = next.put(LogContext.RUN_ID, runId);
                             }
                             if (workflowId != null) {
-                                next = next.put(RunLogContext.WORKFLOW_ID, workflowId);
+                                next = next.put(LogContext.WORKFLOW_ID, workflowId);
                             }
                             return next;
-                        })
-                .doOnEach(
-                        signal -> {
-                            if (signal.isOnNext() || signal.isOnComplete() || signal.isOnError()) {
-                                MDC.put(REQUEST_ID_KEY, requestId);
-                                MDC.put(CORRELATION_ID_KEY, correlationId);
-                                if (runId != null) {
-                                    MDC.put(RunLogContext.RUN_ID, runId);
-                                }
-                                if (workflowId != null) {
-                                    MDC.put(RunLogContext.WORKFLOW_ID, workflowId);
-                                }
-                            }
-                        })
-                .doFinally(sig -> MDC.clear());
+                        });
     }
 
     private static String extractRunId(String path) {

@@ -2,6 +2,17 @@ spring:
   application:
     name: life-engine-runtime
 
+  # Sin esto, en WebFlux el traceId NO llega al MDC aunque esté en el patrón de log, y el
+  # contexto no cruza a los schedulers: los logs de una ejecución asíncrona salen con todos los
+  # campos vacíos. Es lo que hace que LogContext funcione — Reactor restaura el MDC alrededor de
+  # cada operador, en el hilo que le toque, y lo deja como estaba al salir.
+  #
+  # `auto` es lo que Spring Boot recomienda para aplicaciones reactivas instrumentadas con
+  # Micrometer Tracing, que es el caso de este servicio (micrometer-tracing-bridge-otel +
+  # opentelemetry-exporter-otlp están en el pom).
+  reactor:
+    context-propagation: auto
+
   # life-engine-runtime owns DB `life_engine_runtime` (schema `public`). See
   # ../life-engine/docs/operations/11-database-ownership.md for the canonical matrix.
   #
@@ -184,4 +195,16 @@ identity:
 
 logging:
   pattern:
-    level: "%5p [${spring.application.name:},%X{requestId:-},%X{correlationId:-},%X{runId:-},%X{workflowId:-}]"
+    # traceId y spanId van PRIMEROS, y no es un detalle de orden: es el mismo lugar donde los
+    # pone el patrón por default de Spring Boot. Este patrón lo pisaba, y el resultado era que
+    # NINGÚN ambiente —ni local, ni UAT, ni producción— podía juntar una traza con sus logs.
+    # Reconstruir un incidente exige poder saltar de un log a la traza y de la traza al resto de
+    # los logs; sin traceId en la línea, ese salto no existe.
+    #
+    # Cinco campos y no ocho: correlationId, runId y workflowId ya salen escritos a mano en los
+    # mensajes que importan (`Run started runId=... correlationId=...`), y meterlos también acá
+    # los duplica en cada línea a cambio de nada.
+    #
+    # tenantId es lo que permite acotar un incidente a un cliente. Sale vacío en los tokens
+    # service-to-service, que hoy no afirman tenant.
+    level: "%5p [${spring.application.name:},%X{traceId:-},%X{spanId:-},%X{requestId:-},%X{tenantId:-}]"

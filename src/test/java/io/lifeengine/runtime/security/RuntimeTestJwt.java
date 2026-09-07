@@ -44,6 +44,26 @@ public final class RuntimeTestJwt {
         return token("runtime-test@lifeengine.local", role, platformAuthorities);
     }
 
+    /**
+     * Token con claim {@code tenant}, como los que emite Auth para un usuario. Es el único camino
+     * por el que el tenant llega a un log: se resuelve server-side del token, nunca de un header.
+     */
+    public static String bearerForTenant(String tenant, List<String> authorities) {
+        SecretKey key = Keys.hmacShaKeyFor(TEST_SECRET.getBytes(StandardCharsets.UTF_8));
+        Instant now = Instant.now();
+        return "Bearer "
+                + Jwts.builder()
+                        .subject(UUID.randomUUID().toString())
+                        .claim("email", "runtime-test@lifeengine.local")
+                        .claim("role", "admin")
+                        .claim("authorities", authorities)
+                        .claim("tenant", tenant)
+                        .issuedAt(Date.from(now))
+                        .expiration(Date.from(now.plusSeconds(3600)))
+                        .signWith(key)
+                        .compact();
+    }
+
     public static String token(String email, String role, List<String> authorities) {
         SecretKey key = Keys.hmacShaKeyFor(TEST_SECRET.getBytes(StandardCharsets.UTF_8));
         Instant now = Instant.now();

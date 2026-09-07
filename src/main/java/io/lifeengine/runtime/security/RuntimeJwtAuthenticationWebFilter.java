@@ -1,5 +1,6 @@
 package io.lifeengine.runtime.security;
 
+import io.lifeengine.runtime.observability.LogContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
@@ -119,6 +120,15 @@ public class RuntimeJwtAuthenticationWebFilter implements WebFilter {
         var authentication =
                 new UsernamePasswordAuthenticationToken(principal, rawToken, authorities);
         return chain.filter(exchange)
+                // El tenant entra al contexto de log ACA y no en RequestCorrelationWebFilter,
+                // porque acá es el primer punto donde se conoce: sale del claim `tenant` del token
+                // ya validado. Resolverlo antes obligaría a leerlo de un header, y un tenant que
+                // afirma el cliente escrito en un log es evidencia falsa adentro de una
+                // investigación — que es exactamente para lo que se lee un log.
+                //
+                // Los tokens service-to-service no afirman tenant todavía (TD-TENANCY-001): ahí
+                // el campo sale vacío, y vacío es la respuesta correcta, no un hueco.
+                .contextWrite(ctx -> LogContext.write(ctx, LogContext.TENANT_ID, principal.tenantKey()))
                 .contextWrite(ReactiveSecurityContextHolder.withAuthentication(authentication));
     }
 
