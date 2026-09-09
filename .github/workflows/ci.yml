@@ -156,8 +156,14 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
           tags: |
             type=sha,prefix=sha-
+          # La procedencia va en el propio artefacto, no en el manifiesto: `ops` la lee de la
+          # imagen y, si el label no está, registra `buildSource=unknown` en vez de asumir CI
+          # —afirmarlo sin evidencia sería falsificar CI (KAN-258). El lado de `ops` ya estaba;
+          # faltaba que la CI lo estampara, y por eso toda imagen construida acá venía `unknown`.
+          # `build.reason` no se estampa a propósito: sólo lo exige `manual-fallback`.
           labels: |
             life-engine.semver=${{ steps.version.outputs.semver }}
+            life-engine.build.source=github-actions
 
       - name: Build and push
         id: build
