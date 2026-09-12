@@ -4,6 +4,7 @@ import io.lifeengine.runtime.domain.AgentStageRecord;
 import io.lifeengine.runtime.domain.Run;
 import io.lifeengine.runtime.domain.RuntimeEvent;
 import io.lifeengine.runtime.llm.LlmCallRecord;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -14,6 +15,25 @@ public interface RunStore {
     void saveRun(Run run);
 
     Optional<Run> findRun(UUID runId);
+
+    /**
+     * Las corridas de un tenant, las más nuevas primero, paginadas por keyset.
+     *
+     * <p>Keyset y no {@code OFFSET}: {@code runtime_run} crece sin techo, y un OFFSET grande obliga
+     * a Postgres a leer y descartar filas que nadie va a mirar. El orden
+     * {@code (created_at DESC, id DESC)} calza con {@code idx_runtime_run_tenant_created}, que la
+     * migración V3 creó exactamente para esta consulta.
+     *
+     * <p>{@code createdBefore} y {@code beforeId} son el cursor, y son {@code null} en la primera
+     * página. El id va además del instante porque {@code created_at} no es único: dos corridas
+     * disparadas en el mismo microsegundo se repetirían —o se saltearían— entre páginas si el
+     * cursor sólo llevara la fecha.
+     *
+     * <p>{@code tenantId} <b>no puede ser null</b>. Una consulta sin scope devolvería corridas de
+     * todos los tenants, y eso no es un listado: es una fuga. Quién tiene derecho a pedir qué lo
+     * decide el llamador; este método sólo se niega a responder sin scope.
+     */
+    List<Run> listRuns(String tenantId, int limit, Instant createdBefore, UUID beforeId);
 
     /**
      * Persiste el evento y lo devuelve con el {@code seq} que le asignó el log.

@@ -36,6 +36,38 @@ class RuntimeApiWebFluxTest {
     }
 
     @Test
+    void listRuns_withoutTenantClaim_returns403() {
+        // KAN-252. El caller de los tests no afirma tenant, igual que un token service-to-service
+        // hoy (TD-TENANCY-001). La respuesta correcta es una denegación explícita, no una lista
+        // vacía: una lista vacía diría "no hay corridas" cuando lo que pasa es que no se sabe de
+        // quién serían.
+        webTestClient
+                .get()
+                .uri("/api/runtime/runs")
+                .exchange()
+                .expectStatus()
+                .isForbidden()
+                .expectBody()
+                .jsonPath("$.code")
+                .isEqualTo("tenant_scope_required");
+    }
+
+    @Test
+    void listRuns_withUnreadableCursor_returns400BeforeTouchingTheStore() {
+        // El cursor se decodifica en el controller, antes de resolver el tenant: un cursor que este
+        // servicio no emitió es un error del llamador y se responde 400 sin ir a la base.
+        webTestClient
+                .get()
+                .uri("/api/runtime/runs?cursor=no-es-un-cursor")
+                .exchange()
+                .expectStatus()
+                .isBadRequest()
+                .expectBody()
+                .jsonPath("$.code")
+                .isEqualTo("invalid_cursor");
+    }
+
+    @Test
     void createRun_unknownWorkflowId_returns400() {
         webTestClient
                 .post()

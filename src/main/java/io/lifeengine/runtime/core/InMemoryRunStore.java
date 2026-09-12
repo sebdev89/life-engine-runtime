@@ -5,7 +5,9 @@ import io.lifeengine.runtime.domain.EventSequence;
 import io.lifeengine.runtime.domain.Run;
 import io.lifeengine.runtime.domain.RuntimeEvent;
 import io.lifeengine.runtime.llm.LlmCallRecord;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -40,6 +42,31 @@ public class InMemoryRunStore implements RunStore {
     @Override
     public Optional<Run> findRun(UUID runId) {
         return Optional.ofNullable(runs.get(runId));
+    }
+
+    /**
+     * Mismo orden que el store R2DBC —{@code (created_at DESC, id DESC)}— para que un test no vea
+     * un orden distinto según la persistencia que le toque.
+     */
+    private static final Comparator<Run> NEWEST_FIRST =
+            Comparator.comparing(Run::createdAt).thenComparing(Run::id).reversed();
+
+    @Override
+    public List<Run> listRuns(String tenantId, int limit, Instant createdBefore, UUID beforeId) {
+        return runs.values().stream()
+                .filter(run -> tenantId.equals(run.tenantId()))
+                .filter(run -> isBeforeCursor(run, createdBefore, beforeId))
+                .sorted(NEWEST_FIRST)
+                .limit(limit)
+                .toList();
+    }
+
+    private static boolean isBeforeCursor(Run run, Instant createdBefore, UUID beforeId) {
+        if (createdBefore == null || beforeId == null) {
+            return true;
+        }
+        int byTime = run.createdAt().compareTo(createdBefore);
+        return byTime < 0 || (byTime == 0 && run.id().compareTo(beforeId) < 0);
     }
 
     @Override

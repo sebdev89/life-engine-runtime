@@ -3,6 +3,7 @@ package io.lifeengine.runtime.api;
 import io.lifeengine.runtime.agents.AgentNotFoundException;
 import io.lifeengine.runtime.core.RunNotFoundException;
 import io.lifeengine.runtime.core.RunService;
+import io.lifeengine.runtime.core.TenantScopeRequiredException;
 import io.lifeengine.runtime.core.UnknownWorkflowException;
 import io.lifeengine.runtime.domain.EventSequence;
 import io.lifeengine.runtime.tools.ToolNotFoundException;
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
@@ -28,6 +30,9 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/runtime/runs")
 public class RuntimeRestController {
+
+    private static final int MIN_PAGE_SIZE = 1;
+    private static final int MAX_PAGE_SIZE = 100;
 
     private final RunService runService;
     private final RunEventStreamService eventStreamService;
@@ -54,6 +59,39 @@ public class RuntimeRestController {
                                         new IllegalStateException(
                                                 "startRun completed empty — refusing to return"
                                                         + " 201 with no body")));
+    }
+
+    /**
+     * Las corridas del tenant del llamador, las más nuevas primero.
+     *
+     * <p>Paginado por cursor, no por página numerada: {@code runtime_run} crece sin techo y no hay
+     * {@code total}. Se pide {@code ?limit=20}, y si vuelve {@code nextCursor} se lo manda tal cual
+     * en {@code ?cursor=…} para la siguiente.
+     *
+     * <p>El {@code limit} se recorta al rango permitido en vez de rechazarse: un cliente que pide
+     * 5000 filas no está atacando, está mal configurado, y un 400 lo deja sin listado. Un tope
+     * silencioso le da datos y protege a Postgres.
+     *
+     * <p><b>403 si el token no afirma un tenant.</b> Hoy eso incluye a todos los llamadores
+     * service-to-service, que son el 100% del tráfico real (TD-TENANCY-001, pendiente W2). Y las
+     * corridas que ese tráfico ya dejó escritas tienen {@code tenant_id} NULL: <b>ninguna consulta
+     * scopeada las devuelve</b>. Un token de usuario contra un tenant nuevo ve sus propias
+     * corridas; contra el histórico ve una lista vacía, y eso es correcto, no un bug.
+     */
+    @GetMapping
+    public Mono<RunPageView> listRuns(
+            @RequestParam(name = "limit", defaultValue = "20") int limit,
+            @RequestParam(name = "cursor", required = false) String cursor) {
+        int pageSize = Math.min(Math.max(limit, MIN_PAGE_SIZE), MAX_PAGE_SIZE);
+        RunPageCursor decoded =
+                (cursor == null || cursor.isBlank()) ? null : RunPageCursor.decode(cursor);
+        return runService
+                .listRuns(
+                        pageSize,
+                        decoded == null ? null : decoded.createdAt(),
+                        decoded == null ? null : decoded.runId())
+                .map(runs -> runs.stream().map(RunSummaryView::from).toList())
+                .map(page -> new RunPageView(page, RunPageCursor.nextAfter(page, pageSize)));
     }
 
     @GetMapping("/{runId}")
@@ -160,6 +198,18 @@ public class RuntimeRestController {
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public Mono<ApiError> unknownTool(ToolNotFoundException ex) {
         return Mono.just(new ApiError("unknown_tool", ex.getMessage()));
+    }
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(TenantScopeRequiredException.class)
+    @ResponseStatus(HttpStatus.FORBIDDEN)
+    public Mono<ApiError> tenantScopeRequired(TenantScopeRequiredException ex) {
+        return Mono.just(new ApiError("tenant_scope_required", ex.getMessage()));
+    }
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(RunPageCursor.InvalidCursorException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Mono<ApiError> invalidCursor(RunPageCursor.InvalidCursorException ex) {
+        return Mono.just(new ApiError("invalid_cursor", ex.getMessage()));
     }
 
     @org.springframework.web.bind.annotation.ExceptionHandler(WebExchangeBindException.class)

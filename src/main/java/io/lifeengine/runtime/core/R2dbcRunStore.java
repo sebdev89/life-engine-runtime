@@ -85,6 +85,33 @@ public class R2dbcRunStore implements RunStore {
             WHERE id = :id
             """;
 
+    /**
+     * Primera página. El {@code WHERE tenant_id = :tenantId} satisface el predicado del índice
+     * parcial {@code idx_runtime_run_tenant_created} (que excluye los NULL), así que la consulta
+     * lo usa en vez de escanear la tabla.
+     */
+    private static final String LIST_RUNS_FIRST_PAGE_SQL =
+            """
+            SELECT id, status, workflow_id, correlation_id, tenant_id, created_at, updated_at,
+                   started_at, finished_at, metadata
+            FROM runtime_run
+            WHERE tenant_id = :tenantId
+            ORDER BY created_at DESC, id DESC
+            LIMIT :limit
+            """;
+
+    /** Página siguiente. La comparación de tuplas es lo que hace el keyset atómico y sin saltos. */
+    private static final String LIST_RUNS_NEXT_PAGE_SQL =
+            """
+            SELECT id, status, workflow_id, correlation_id, tenant_id, created_at, updated_at,
+                   started_at, finished_at, metadata
+            FROM runtime_run
+            WHERE tenant_id = :tenantId
+              AND (created_at, id) < (:createdBefore, :beforeId)
+            ORDER BY created_at DESC, id DESC
+            LIMIT :limit
+            """;
+
     private static final String INSERT_EVENT_SQL =
             """
             WITH inserted AS (
@@ -195,6 +222,22 @@ public class R2dbcRunStore implements RunStore {
                         .blockOptional(BLOCK_TIMEOUT)
                         .orElse(null);
         return Optional.ofNullable(run);
+    }
+
+    @Override
+    public List<Run> listRuns(String tenantId, int limit, Instant createdBefore, UUID beforeId) {
+        boolean firstPage = createdBefore == null || beforeId == null;
+        DatabaseClient.GenericExecuteSpec spec =
+                databaseClient
+                        .sql(firstPage ? LIST_RUNS_FIRST_PAGE_SQL : LIST_RUNS_NEXT_PAGE_SQL)
+                        .bind("tenantId", tenantId)
+                        .bind("limit", limit);
+        if (!firstPage) {
+            spec = spec.bind("createdBefore", createdBefore).bind("beforeId", beforeId);
+        }
+        List<Run> page =
+                spec.map((row, meta) -> mapRun(row)).all().collectList().block(BLOCK_TIMEOUT);
+        return page == null ? List.of() : page;
     }
 
     @Override
